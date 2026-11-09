@@ -344,6 +344,24 @@ employee's approval lands on the other.
    logout lands on Railway — it's one value per Application). Nothing else changes: the
    Entities, Grants, and Tenant token-exchange settings are instance-side.
 
+**Permify (FGA) on Railway** — for the `/chat` employee demo, run Permify as a second,
+private service in the same project instead of on a laptop:
+
+1. Add a **Postgres** database, and a service from the image `ghcr.io/permify/permify`
+   (its default command is already `serve`). Give it **no public domain** — Permify's
+   API is unauthenticated, so it should only be reachable over Railway's private network.
+2. Permify variables: `PERMIFY_DATABASE_ENGINE=postgres`,
+   `PERMIFY_DATABASE_URI=${{Postgres.DATABASE_URL}}`, `PERMIFY_DATABASE_AUTO_MIGRATE=true`,
+   `PERMIFY_HTTP_PORT=3476`. Postgres is what lets relations survive a Permify restart;
+   the in-memory default would lose them.
+3. App variables: `PERMIFY_URL=http://${{permify.RAILWAY_PRIVATE_DOMAIN}}:3476`,
+   `PERMIFY_TENANT=t1`, `PERMIFY_TIMEOUT_MS=5000` (a cold private-network call can exceed
+   the 2.5s default).
+
+The app loads the schema and company graph itself. If it starts before Permify is ready
+it serves the in-memory fallback, logs `[fga] … using in-memory fallback: <reason>`, and
+retries every 30s until Permify answers — no restart needed.
+
 The orchestrator talks to its own MCP server over loopback (`127.0.0.1:$PORT`), not
 back through Railway's public edge — same checks, one fewer network hop.
 

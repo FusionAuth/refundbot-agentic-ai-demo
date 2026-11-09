@@ -230,10 +230,23 @@ async function withFallback<T>(live: () => Promise<T>, demo: () => T): Promise<T
     const value = await live();
     markMode("live");
     return value;
-  } catch {
+  } catch (err) {
     markMode("demo");
+    logFallbackOnce(err);
     return demo();
   }
+}
+
+/** Logs each DISTINCT reason for falling back once, so an unreachable or misconfigured
+ * Permify shows up in the server logs instead of only as a banner. */
+const globalForLog = globalThis as unknown as { __infusionAgentFgaLogged?: Set<string> };
+function logFallbackOnce(err: unknown) {
+  const e = err as { message?: string; cause?: { code?: string; message?: string } };
+  const reason = [e?.message, e?.cause?.code ?? e?.cause?.message].filter(Boolean).join(" — ");
+  const seen = (globalForLog.__infusionAgentFgaLogged ??= new Set());
+  if (seen.has(reason)) return;
+  seen.add(reason);
+  console.warn(`[fga] Permify at ${permifyConfig.baseUrl} unavailable, using in-memory fallback: ${reason}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -650,25 +663,40 @@ function structuralTuples(): RelationTuple[] {
 }
 
 /**
- * Loads the schema and writes the structural tuples, once per process. In live mode
- * this POSTs to Permify; in demo mode it seeds the same links into the in-memory store
- * so the fallback resolver has something to reach through. Idempotent.
+ * Loads the schema and writes the structural tuples. In live mode this POSTs to
+ * Permify; in demo mode it seeds the same links into the in-memory store so the
+ * fallback resolver has something to reach through. Idempotent.
+ *
+ * Memoized only once Permify has actually ACCEPTED the schema. If the server was down
+ * (e.g. the app container started before the Permify container on Railway), we fall
+ * back to demo mode for now and try the live write again after BOOT_RETRY_MS — so the
+ * app goes live by itself once Permify comes up, instead of staying in fallback until
+ * the next restart.
  */
+const BOOT_RETRY_MS = 30_000;
+const globalForRetry = globalThis as unknown as { __infusionAgentFgaBootRetryAt?: number };
+
 async function bootstrap(): Promise<void> {
   if (globalForBoot.__infusionAgentFgaBootstrapped) return;
+  const retryAt = globalForRetry.__infusionAgentFgaBootRetryAt;
+  if (retryAt && Date.now() < retryAt) return; // demo store already seeded; wait to retry
 
-  // The schema write is live-only; the demo store needs no schema. Failure here
-  // (server down) just leaves us in demo mode for everything else.
-  await withFallback(
+  const schemaLive = await withFallback(
     async () => {
       await permifyPost("schemas/write", { schema: AGENT_SCHEMA });
+      return true;
     },
-    () => undefined
+    () => false
   );
 
   await writeTuples(structuralTuples());
 
-  globalForBoot.__infusionAgentFgaBootstrapped = true;
+  if (schemaLive && lastFgaMode() === "live") {
+    globalForBoot.__infusionAgentFgaBootstrapped = true;
+    globalForRetry.__infusionAgentFgaBootRetryAt = undefined;
+  } else {
+    globalForRetry.__infusionAgentFgaBootRetryAt = Date.now() + BOOT_RETRY_MS;
+  }
 }
 
 /**
