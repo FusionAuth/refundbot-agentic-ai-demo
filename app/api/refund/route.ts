@@ -37,29 +37,34 @@ export const dynamic = "force-dynamic";
 
 function replyFor(view: RefundRequestView): string {
   const amount = view.amountCents !== undefined ? formatUsd(view.amountCents) : "";
+  const item = view.orderSummary ?? view.orderId;
+  const said = (label: string) =>
+    view.trace.some((e) => e.type === "note" && e.label.includes(label));
   switch (view.decision) {
     case "stopped":
       if (view.amountCents === undefined) {
-        return `I couldn't find order ${view.orderId} on your account, so there's nothing to refund. (Order history is the only source I can go by.)`;
+        return `I couldn't find an order ${view.orderId} on your account, so there's nothing I can refund. If you think that's wrong, double-check the order number in your confirmation email.`;
       }
-      return `I can't refund ${view.orderId} — the services stopped it (see the trace for why).`;
+      if (said("already refunded")) return `${item} has already been refunded — you should see it on your statement within 3–5 business days.`;
+      if (said("budget")) return `I can't process ${item} automatically right now. Please try again tomorrow or contact us by email.`;
+      return `I'm not able to refund ${item}.`;
     case "failed":
-      return "Something in the chain refused or failed — the trace shows FusionAuth's or the service's exact reason.";
+      return "Something went wrong while processing that, and nothing was charged back. Please try again in a moment.";
     case "awaiting_approvals":
       if (view.customer.state === "pending") {
         return view.needsEmployee
-          ? `Found ${view.orderSummary} for ${amount}. That's above your ${formatUsd(view.thresholdCents ?? 0)} self-service limit, so a support specialist has to approve it too. Please confirm you want this refund.`
-          : `Found ${view.orderSummary} for ${amount}. Please confirm you want this refund.`;
+          ? `I found ${item} for ${amount}. Refunds over ${formatUsd(view.thresholdCents ?? 0)} on your account also get a quick review by one of our specialists. First, please confirm you want this refund:`
+          : `I found ${item} for ${amount}, and it's eligible for an instant refund. Please confirm you want to go ahead:`;
       }
-      return `Thanks — you've confirmed. Waiting on a support specialist to review the ${amount} refund.`;
+      return `Thanks for confirming! A specialist is reviewing your ${amount} refund now — usually within a few minutes. I'll update you right here.`;
     case "executing":
-      return "Approvals are in — processing now.";
+      return "Everything's approved — processing your refund now.";
     case "refunded":
-      return `Done: ${amount} refunded for ${view.orderSummary}. Confirmation ${view.confirmationId}.`;
+      return `Done! ${amount} is on its way back to your original payment method (3–5 business days). Your confirmation number is ${view.confirmationId}.`;
     case "denied":
-      return `A support specialist reviewed this and declined the ${amount} refund. Nothing was charged back.`;
+      return `I'm sorry — our specialist reviewed the ${amount} refund for ${item} and wasn't able to approve it. Nothing was charged back. Reply here if you'd like to talk it through.`;
     case "declined":
-      return "Okay — I've cancelled that refund. Nothing was processed.";
+      return "No problem — I've cancelled that refund request. Nothing was processed.";
   }
 }
 
@@ -167,7 +172,7 @@ export async function POST(request: NextRequest) {
     const hits = searchKnowledgeBase(plan.query, [], 2);
     const reply = hits.length
       ? hits.map((h) => `${h.article.title}: ${h.article.body}`).join("\n\n")
-      : "I don't have a policy article on that — try asking about the refund window, timing, or approvals.";
+      : "I don't have an answer for that one — try asking about our refund window, timing, or why some refunds get reviewed.";
     return NextResponse.json({ reply, planner } satisfies RefundTurnResponse);
   }
 

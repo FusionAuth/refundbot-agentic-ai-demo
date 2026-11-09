@@ -6,22 +6,8 @@
  * we say that instead of pretending.
  */
 export default function FgaModeBanner({ mode }: { mode: "live" | "demo" }) {
-  if (mode === "live") {
-    return (
-      <div
-        role="status"
-        className="flex items-center gap-2 rounded-lg border border-fga/30 bg-fga-soft px-4 py-2.5 text-sm text-fga-ink"
-      >
-        <span aria-hidden="true">●</span>
-        <span>
-          <strong className="font-semibold">Live FGA.</strong> Every resource decision
-          in the trace below came from a real FusionAuth FGA{" "}
-          <code className="font-mono">check</code> —
-          relationship cascade and all — with zero app-code traversal.
-        </span>
-      </div>
-    );
-  }
+  // Live is the expected state and needs no announcement — only a degrade is shown.
+  if (mode === "live") return null;
   return (
     <div
       role="status"

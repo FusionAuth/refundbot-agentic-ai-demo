@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import BrightlineMark from "@/components/BrightlineMark";
 
 interface TopNavProps {
   name: string;
@@ -10,7 +11,7 @@ interface TopNavProps {
   isStaff?: boolean;
 }
 
-const BASE_LINKS = [{ href: "/refund", label: "RefundBot" }];
+const BASE_LINKS = [{ href: "/refund", label: "Help & refunds" }];
 const STAFF_LINKS = [
   { href: "/support/approvals", label: "Approvals" },
   { href: "/chat", label: "Ask Fusion" },
@@ -33,14 +34,12 @@ export default function TopNav({ name, isAdmin, isStaff }: TopNavProps) {
     <header className="sticky top-0 z-20 border-b border-line bg-card/90 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3">
         <Link href="/" className="flex items-center gap-2.5">
-          <span
-            className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-sm font-bold text-white font-display"
-            aria-hidden="true"
-          >
-            RB
-          </span>
+          <BrightlineMark />
           <span className="text-base font-bold tracking-tight text-ink font-display">
-            RefundBot
+            Brightline
+          </span>
+          <span className="hidden rounded-full bg-brand-soft px-2 py-0.5 text-[0.65rem] font-semibold text-brand-ink sm:inline">
+            Help
           </span>
         </Link>
 

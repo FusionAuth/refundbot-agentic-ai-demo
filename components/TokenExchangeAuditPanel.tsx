@@ -1,6 +1,7 @@
 import Link from "next/link";
 import ExchangeChainTrace from "@/components/ExchangeChainTrace";
 import TokenExchangeModeBanner from "@/components/TokenExchangeModeBanner";
+import DocLink from "@/components/DocLink";
 import { allRefunds, toView } from "@/lib/approvals";
 import { bankingGrantExists } from "@/lib/entities";
 import {
@@ -105,7 +106,9 @@ export default async function TokenExchangeAuditPanel({ selectedId }: { selected
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-line bg-card p-4 shadow-sm">
-          <h3 className="text-sm font-bold text-ink">Entities</h3>
+          <h3 className="text-sm font-bold text-ink">
+            <DocLink to="entityManagement">Entities</DocLink>
+          </h3>
           <ul className="mt-2 space-y-1 text-xs font-mono">
             <li>
               orchestrator · {orchestratorId()}{" "}
@@ -121,7 +124,9 @@ export default async function TokenExchangeAuditPanel({ selectedId }: { selected
           </ul>
         </div>
         <div className="rounded-xl border border-line bg-card p-4 shadow-sm">
-          <h3 className="text-sm font-bold text-ink">orchestrator → banking-api Grant right now</h3>
+          <h3 className="text-sm font-bold text-ink">
+            orchestrator → banking-api <DocLink to="entityGrantsApi">Grant</DocLink> right now
+          </h3>
           <p
             className={`mt-2 text-sm font-semibold ${
               grantNow === false ? "text-verified" : grantNow === true ? "text-denied" : "text-ink-soft"
@@ -173,7 +178,7 @@ export default async function TokenExchangeAuditPanel({ selectedId }: { selected
                 <div className="rounded-xl border border-line bg-card shadow-sm">
                   <div className="border-b border-line px-4 py-3">
                     <h3 className="font-bold text-ink font-display">
-                      FusionAuth · Token Exchange Audit Log
+                      FusionAuth · <DocLink to="auditLogSearch">Token Exchange Audit Log</DocLink>
                     </h3>
                     <p className="text-xs text-ink-soft">
                       <code>GET /api/system/token-exchange-audit-log/search</code> — this
@@ -192,7 +197,7 @@ export default async function TokenExchangeAuditPanel({ selectedId }: { selected
                 <div className="rounded-xl border border-line bg-card shadow-sm">
                   <div className="border-b border-line px-4 py-3">
                     <h3 className="font-bold text-ink font-display">
-                      FusionAuth · Token Exchange Chain
+                      FusionAuth · <DocLink to="auditLogChain">Token Exchange Chain</DocLink>
                     </h3>
                     <p className="text-xs text-ink-soft">
                       <code>GET /api/system/token-exchange-audit-log/chain?issuedTokenJti=</code>

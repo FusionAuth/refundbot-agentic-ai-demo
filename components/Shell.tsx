@@ -23,9 +23,6 @@ export default function Shell({
         isStaff={isSupportStaff(session.roles)}
       />
       <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8">{children}</main>
-      <footer className="border-t border-line px-5 py-6 text-center text-xs text-ink-soft">
-        RefundBot · built on InFusion Agent · a FusionAuth OAuth Token Exchange demo · no real money moves
-      </footer>
     </>
   );
 }

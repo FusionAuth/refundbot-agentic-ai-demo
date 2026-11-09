@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { exchangeCodeForTokens, verifyIdToken } from "@/lib/fusionauth";
+import { exchangeCodeForTokens, verifyIdToken, fusionAuthConfig } from "@/lib/fusionauth";
 import { setSession } from "@/lib/session";
 import {
   STATE_COOKIE,
@@ -19,6 +19,15 @@ import {
  * seal the tokens into the encrypted session cookie, then return the browser to
  * the path it started from.
  */
+/**
+ * Redirects are built on APP_BASE_URL, never `request.url`: behind a proxy (Railway)
+ * request.url is the container's internal address (e.g. localhost:8080), which the
+ * browser can't reach.
+ */
+function appUrl(path: string): URL {
+  return new URL(path, fusionAuthConfig.appBaseUrl);
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
 
@@ -37,7 +46,7 @@ export async function GET(request: NextRequest) {
             `Retrying the login without it — the tool it unlocks will be denied at the ` +
             `sandbox until you add the scope (FusionAuth → Applications → OAuth → Scopes).`
         );
-        const retry = new URL("/api/auth/login", request.url);
+        const retry = appUrl("/api/auth/login");
         const role = request.cookies.get(ROLE_COOKIE)?.value;
         if (role) retry.searchParams.set("role", role);
         retry.searchParams.set(
@@ -48,7 +57,7 @@ export async function GET(request: NextRequest) {
       }
     }
     return NextResponse.redirect(
-      new URL(`/?error=${encodeURIComponent(error)}`, request.url)
+      appUrl(`/?error=${encodeURIComponent(error)}`)
     );
   }
 
@@ -65,7 +74,7 @@ export async function GET(request: NextRequest) {
     state !== expectedState ||
     !codeVerifier
   ) {
-    return NextResponse.redirect(new URL("/?error=invalid_state", request.url));
+    return NextResponse.redirect(appUrl("/?error=invalid_state"));
   }
 
   try {
@@ -77,7 +86,7 @@ export async function GET(request: NextRequest) {
     await setSession(tokens);
   } catch {
     return NextResponse.redirect(
-      new URL("/?error=exchange_failed", request.url)
+      appUrl("/?error=exchange_failed")
     );
   }
 
@@ -87,5 +96,5 @@ export async function GET(request: NextRequest) {
   store.delete(RETURN_COOKIE);
   store.delete(ROLE_COOKIE);
 
-  return NextResponse.redirect(new URL(returnTo, request.url));
+  return NextResponse.redirect(appUrl(returnTo));
 }

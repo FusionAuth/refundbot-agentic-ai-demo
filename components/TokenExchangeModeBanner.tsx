@@ -11,21 +11,8 @@ export default function TokenExchangeModeBanner({
   mode: "live" | "simulated";
   reason?: string;
 }) {
-  if (mode === "live") {
-    return (
-      <div
-        role="status"
-        className="flex items-center gap-2 rounded-lg border border-verified/30 bg-verified-soft px-4 py-2.5 text-sm text-verified"
-      >
-        <span aria-hidden="true">●</span>
-        <span>
-          <strong className="font-semibold">Live RFC 8693 Token Exchange.</strong> Every hop
-          below is a real FusionAuth token exchange, authorized by whether an Entity Grant
-          exists at that moment.
-        </span>
-      </div>
-    );
-  }
+  // Live is the expected state and needs no announcement — only a degrade is shown.
+  if (mode === "live") return null;
   return (
     <div
       role="status"
@@ -34,7 +21,16 @@ export default function TokenExchangeModeBanner({
       <span className="font-semibold">
         Simulated exchange chain — Token Exchange requires a FusionAuth Enterprise plan.
       </span>{" "}
-      {reason ? `${reason} ` : ""}Hops are minted locally under the same Grant rule and
+      {reason ? `${reason} ` : ""}
+      <a
+        href="https://fusionauth.io/docs/concepts/plans-and-limits/plans-features"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline"
+      >
+        Compare plans ↗
+      </a>
+      . Hops are minted locally under the same Grant rule and
       clearly labeled; nothing here is a FusionAuth decision.
     </div>
   );

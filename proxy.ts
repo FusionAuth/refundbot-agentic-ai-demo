@@ -28,7 +28,11 @@ export function proxy(request: NextRequest) {
 
   const hasSession = request.cookies.has(sessionCookieName);
   if (!hasSession) {
-    const loginUrl = new URL("/api/auth/login", request.url);
+    // Relative to the public origin, not request.url — behind Railway's proxy that's the
+    // container's internal localhost:8080. (proxy.ts runs before any page code, so read the
+    // env directly rather than importing lib/fusionauth.)
+    const base = process.env.APP_BASE_URL || request.nextUrl.origin;
+    const loginUrl = new URL("/api/auth/login", base);
     loginUrl.searchParams.set("redirect_uri", `${pathname}${search}`);
     return NextResponse.redirect(loginUrl);
   }

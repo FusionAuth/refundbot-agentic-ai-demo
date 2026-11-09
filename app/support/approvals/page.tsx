@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import Shell from "@/components/Shell";
+import DocLink from "@/components/DocLink";
 import ApprovalConsole from "@/components/ApprovalConsole";
 import TokenExchangeModeBanner from "@/components/TokenExchangeModeBanner";
 import { getSession } from "@/lib/session";
@@ -40,7 +41,11 @@ export default async function ApprovalsPage() {
         <p className="text-sm text-ink-soft">
           You&rsquo;re one of two independent approvals on an escalated refund. Approving
           records your FusionAuth user id against the transaction; that identity is checked
-          by the banking service before money moves, not just logged.
+          by the banking service before money moves, not just logged. Until both approvals
+          land, no <DocLink to="entityGrantsApi">Entity Grant</DocLink> to banking-api exists,
+          so FusionAuth won&rsquo;t <DocLink to="tokenExchange">exchange</DocLink> a token for it.
+          Access to this console comes from your{" "}
+          <DocLink to="roles">application role</DocLink>.
         </p>
       </div>
       <div className="mb-5">

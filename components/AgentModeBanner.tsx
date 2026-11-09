@@ -6,22 +6,8 @@
  * auth layer never trusts the planner — so the banner is about the planner only.
  */
 export default function AgentModeBanner({ mode }: { mode: "live" | "scripted" }) {
-  if (mode === "live") {
-    return (
-      <div
-        role="status"
-        className="flex items-center gap-2 rounded-lg border border-verified/30 bg-verified-soft px-4 py-2.5 text-sm text-verified"
-      >
-        <span aria-hidden="true">●</span>
-        <span>
-          <strong className="font-semibold">Live LLM Agent.</strong> A real
-          Claude tool-calling loop is choosing which tools to call. Every scope
-          check below still runs independently — the auth layer never trusts the
-          planner.
-        </span>
-      </div>
-    );
-  }
+  // Live is the expected state and needs no announcement — only a degrade is shown.
+  if (mode === "live") return null;
   return (
     <div
       role="status"

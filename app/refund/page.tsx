@@ -10,36 +10,37 @@ import { resolveExchangeMode } from "@/lib/token-exchange";
 export const dynamic = "force-dynamic";
 
 /**
- * RefundBot — the customer-facing surface. proxy.ts bounces signed-out visitors to the
- * hosted login (any FusionAuth login method works; passwordless is a nice touch); this
- * page does the real verification via getSession().
+ * Brightline Help — the customer's chat with RefundBot. proxy.ts bounces signed-out
+ * visitors to the hosted login; getSession() does the real verification here.
+ *
+ * The mode banners render only on a degrade (simulated chain / scripted planner): live
+ * is the expected state and isn't announced.
  */
 export default async function RefundPage() {
   const session = await getSession();
   if (!session) redirect("/api/auth/login?redirect_uri=/refund");
 
   const exchange = await resolveExchangeMode();
-  const mode = agentMode();
+  const first = (session.name ?? "").split(" ")[0] || undefined;
 
   return (
     <Shell session={session}>
       <div className="mb-5">
         <h1 className="text-2xl font-bold tracking-tight text-ink font-display">
-          RefundBot
+          {first ? `How can we help, ${first}?` : "How can we help?"}
         </h1>
         <p className="text-sm text-ink-soft">
-          Signed in as {session.name ?? session.email ?? "you"}. Four services, four
-          exchanged tokens, and nothing irreversible without your say-so.
+          Chat with RefundBot about any order from the last 90 days.
         </p>
       </div>
-      <div className="mb-5 space-y-3">
+      <div className="space-y-3 empty:hidden">
         <TokenExchangeModeBanner
           mode={exchange.mode}
           reason={exchange.mode === "simulated" ? exchange.reason : undefined}
         />
-        <AgentModeBanner mode={mode} />
+        <AgentModeBanner mode={agentMode()} />
       </div>
-      <RefundChat customerId={session.userId} exchangeMode={exchange.mode} />
+      <RefundChat customerId={session.userId} customerName={session.name} exchangeMode={exchange.mode} />
     </Shell>
   );
 }

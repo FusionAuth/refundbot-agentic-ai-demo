@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ChainEntry, ExchangeHopEntry, RefundService } from "@/lib/refund-types";
+import DocLink from "@/components/DocLink";
+import type { DocKey } from "@/lib/docs-links";
 
 /**
  * RefundBot's request-architecture diagram — the /refund counterpart of the /chat
@@ -65,24 +67,29 @@ interface NodeMeta {
   subtitle: string;
   description: string;
   accent?: string;
+  /** FusionAuth docs for this component, shown in the caption on hover. */
+  doc?: { to: DocKey; label: string };
 }
 
 const NODES: Record<NodeId, NodeMeta> = {
   customer: {
     x: 30, y: 150, w: 180, h: 90,
     title: "Customer", subtitle: "browser · /refund",
+    doc: { to: "mfa", label: "Multi-factor authentication" },
     description:
       "The signed-in customer (possibly running their own agent). Asks for the refund and confirms it out-of-band through FusionAuth — not through the chat box.",
   },
   console: {
     x: 30, y: 470, w: 180, h: 90,
     title: "Support employee", subtitle: "/support/approvals",
+    doc: { to: "roles", label: "Application roles" },
     description:
       "The second, independent human. Required above the value-scaled threshold (never below $100). Approve or deny; their user id is checked by banking-api, not just logged.",
   },
   fusionauth: {
     x: 640, y: 20, w: 330, h: 92,
     title: "FusionAuth", subtitle: "token exchange · Entity Grants · 2FA",
+    doc: { to: "tokenExchange", label: "OAuth Token Exchange" },
     accent: "var(--color-brand)",
     description:
       "Issues each narrower token (RFC 8693, Entity policy engine): only if a Grant from the orchestrator to that audience exists right now. Keeps sub = customer, act = orchestrator, and copies sid.",
@@ -96,39 +103,46 @@ const NODES: Record<NodeId, NodeMeta> = {
   pipeline: {
     x: 290, y: 300, w: 250, h: 90,
     title: "Exchange pipeline", subtitle: "⇅ exchange → narrow token",
+    doc: { to: "tokenExchangeGrant", label: "Token exchange grant" },
     description:
       "For each hop, trades the customer's original access token for one service's audience, then calls that service with the narrower token. Holds the approval queue, keyed by sid.",
   },
   grants: {
     x: 290, y: 450, w: 250, h: 90,
     title: "Grant manager", subtitle: "lib/entities.ts · banking only",
+    doc: { to: "entityGrantsApi", label: "Entity Grant API" },
     description:
       "The only code that creates the orchestrator → banking-api Grant: after both approvals, immediately before the hop-4 exchange — and deletes it in a finally, every time.",
   },
   verify: {
     x: 660, y: 300, w: 200, h: 100,
     title: "exchangeGate", subtitle: "JWKS · aud · act.sub",
+    doc: { to: "mcpServerAccess", label: "Control MCP server access" },
     description:
       "The resource server's own check: verifies the exchanged token against FusionAuth's JWKS, requires the service's OWN audience and the orchestrator as actor. Refuses the customer's raw token.",
   },
   "order-history": {
     x: 930, y: 190, w: 270, h: 78,
     title: "order-history-service", subtitle: "hop 1 · standing Grant",
+    doc: { to: "entityManagement", label: "Entities" },
     description: "Does this order exist for this customer? The only source of truth — an empty answer stops the whole chain.",
   },
   "customer-scoring": {
     x: 930, y: 285, w: 270, h: 78,
     title: "customer-scoring-service", subtitle: "hop 2 · standing Grant",
+    doc: { to: "entityManagement", label: "Entities" },
     description: "A mock 0–100 value score that sets the customer's self-service threshold.",
   },
   "refund-budget": {
     x: 930, y: 380, w: 270, h: 78,
     title: "refund-budget-service", subtitle: "hop 3 · standing Grant",
+    doc: { to: "entityManagement", label: "Entities" },
     description: "Budget check and the employee-approval threshold. The amount comes from the order record, never the caller.",
   },
   "banking-api": {
     x: 930, y: 475, w: 270, h: 78,
     title: "banking-api", subtitle: "hop 4 · NO standing Grant",
+    doc: { to: "entityPolicyEngine", label: "Entity policy engine" },
     accent: "var(--color-signal)",
     description:
       "The irreversible step. Unreachable until the Grant exists; also checks the approval record for the token's sid and the approving employee before moving money.",
@@ -327,7 +341,9 @@ function noteBeat(e: Extract<ChainEntry, { type: "note" }>): Beat {
   if (e.layer === "planner") {
     return { ...base, nodes: [["customer", "info"], ["planner", "info"]], edges: [["ask", "info"]] };
   }
-  if (e.layer === "approval") {
+  // "approvals required" announces who WILL be asked — nobody has acted yet, so it
+  // lights only the pipeline, not the customer or the support console.
+  if (e.layer === "approval" && e.status !== "required") {
     if (/customer/.test(e.label) && !/required/.test(e.label)) {
       return { ...base, nodes: [["customer", v], ["fusionauth", v], ["pipeline", v]], edges: [["confirm", v]] };
     }
@@ -384,15 +400,19 @@ function useProgressiveReveal(count: number, reduce: boolean): number {
 export default function RefundArchitectureDiagram({
   entries,
   mode,
+  embedded = false,
 }: {
   entries: ChainEntry[];
   mode: "live" | "simulated";
+  /** Drop the card + collapsible header to sit inside another panel. */
+  embedded?: boolean;
 }) {
   const beats = useMemo(() => toBeats(entries), [entries]);
   const reduce = usePrefersReducedMotion();
   const revealed = useProgressiveReveal(beats.length, reduce);
   const [hovered, setHovered] = useState<NodeId | null>(null);
-  const [open, setOpen] = useState(true);
+  const [openState, setOpen] = useState(true);
+  const open = embedded || openState;
 
   const view = useMemo(() => {
     const nodeState = Object.fromEntries(
@@ -419,8 +439,8 @@ export default function RefundArchitectureDiagram({
     return { nodeState, edgeState, activeNodes, activeEdges, current: shown[shown.length - 1] };
   }, [beats, revealed]);
 
-  const caption = hovered
-    ? { title: NODES[hovered].title, text: NODES[hovered].description }
+  const caption: { title: string; text: string; doc?: NodeMeta["doc"] } = hovered
+    ? { title: NODES[hovered].title, text: NODES[hovered].description, doc: NODES[hovered].doc }
     : view.current
       ? { title: view.current.title, text: view.current.text }
       : {
@@ -450,8 +470,16 @@ export default function RefundArchitectureDiagram({
   );
 
   return (
-    <div className="rounded-xl border border-line bg-card shadow-sm">
-      <div className={`flex flex-wrap items-center justify-between gap-2 px-5 py-3 ${open ? "border-b border-line" : ""}`}>
+    <div className={embedded ? "" : "rounded-xl border border-line bg-card shadow-sm"}>
+      {embedded ? (
+        <div className="mb-2 flex justify-end">
+          <Legend />
+        </div>
+      ) : null}
+      <div
+        hidden={embedded}
+        className={`flex flex-wrap items-center justify-between gap-2 px-5 py-3 ${open ? "border-b border-line" : ""}`}
+      >
         <h2>
           <button
             type="button"
@@ -478,7 +506,7 @@ export default function RefundArchitectureDiagram({
       </div>
 
       {open ? (
-        <div id="rb-diagram-body" className="px-4 py-4">
+        <div id="rb-diagram-body" className={embedded ? "" : "px-4 py-4"}>
           {hasActivity ? (
           <svg
             viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -489,7 +517,8 @@ export default function RefundArchitectureDiagram({
             // the request grows instead of zooming in when only a few are drawn.
             style={{
               fontFamily: "var(--font-body)",
-              width: `${Math.min(100, (vb.w / FULL_WIDTH) * 100)}%`,
+              // Embedded in a side panel the panel itself is the frame: fill it.
+              width: embedded ? "100%" : `${Math.min(100, (vb.w / FULL_WIDTH) * 100)}%`,
             }}
           >
             <defs>
@@ -520,8 +549,8 @@ export default function RefundArchitectureDiagram({
           </svg>
           ) : (
             <p className="rounded-lg border border-dashed border-line bg-surface px-4 py-6 text-center text-xs text-ink-soft">
-              Nothing to show yet — ask for a refund and the components it touches will
-              appear here.
+              Ask for a refund and the components it touches will appear here, step by
+              step.
             </p>
           )}
 
@@ -529,6 +558,13 @@ export default function RefundArchitectureDiagram({
           <div className="mt-3 rounded-lg border border-line bg-surface px-4 py-2.5">
             <p className="text-xs font-semibold text-ink font-mono">{caption.title}</p>
             {caption.text ? <p className="mt-0.5 text-xs text-ink-soft">{caption.text}</p> : null}
+            {caption.doc ? (
+              <p className="mt-1 text-xs">
+                <DocLink to={caption.doc.to}>{caption.doc.label}</DocLink>
+              </p>
+            ) : (
+              <p className="mt-1 text-[0.7rem] text-ink-soft">Hover a component for its FusionAuth docs.</p>
+            )}
           </div>
           ) : null}
         </div>
