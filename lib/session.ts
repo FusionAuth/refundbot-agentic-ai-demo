@@ -48,6 +48,13 @@ export interface Session {
   scopes: string[];
   /** The user's FusionAuth tenant, off the access token's `tid` claim. */
   tenantId?: string;
+  /**
+   * The login session id (`sid`) off the access token. FusionAuth copies it onto every
+   * token exchanged from this one, which is what makes it RefundBot's correlator.
+   */
+  sid?: string;
+  /** The access token's own `jti` — the correlator fallback when there's no `sid`. */
+  tokenJti?: string;
   accessToken: string;
   idToken?: string;
   refreshToken?: string;
@@ -153,6 +160,8 @@ export async function getSession(): Promise<Session | null> {
     roles,
     scopes,
     tenantId,
+    sid: typeof claims.sid === "string" ? claims.sid : undefined,
+    tokenJti: typeof claims.jti === "string" ? claims.jti : undefined,
     accessToken: payload.accessToken,
     idToken: payload.idToken,
     refreshToken: payload.refreshToken,
@@ -178,8 +187,16 @@ export const sessionCookieName = SESSION_COOKIE;
 const STEPUP_COOKIE = "ia_stepup";
 const STEPUP_TTL_SECONDS = 120;
 
-export async function setStepUpGrant(action: string) {
-  const jwe = await new EncryptJWT({ action })
+/**
+ * `via` records HOW the grant was earned — a completed two-factor challenge, or
+ * FusionAuth saying none was required — so RefundBot's trace can say which one backed
+ * the customer's confirmation instead of implying MFA that never happened.
+ */
+export async function setStepUpGrant(
+  action: string,
+  via: "challenge" | "not_required" | "no_method" = "challenge"
+) {
+  const jwe = await new EncryptJWT({ action, via })
     .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
     .setIssuedAt()
     .setExpirationTime(`${STEPUP_TTL_SECONDS}s`)
@@ -208,5 +225,31 @@ export async function consumeStepUpGrant(action: string): Promise<boolean> {
     return payload.action === action; // jwtDecrypt already enforced `exp`
   } catch {
     return false;
+  }
+}
+
+/**
+ * Like consumeStepUpGrant, but also reports how the grant was earned. Single-use: the
+ * cookie is deleted either way.
+ */
+export async function consumeStepUpGrantDetail(
+  action: string
+): Promise<{ ok: boolean; via?: "challenge" | "not_required" | "no_method" }> {
+  const store = await cookies();
+  const raw = store.get(STEPUP_COOKIE)?.value;
+  if (!raw) return { ok: false };
+  store.delete(STEPUP_COOKIE);
+  try {
+    const { payload } = await jwtDecrypt(raw, sessionKey());
+    if (payload.action !== action) return { ok: false };
+    return {
+      ok: true,
+      via:
+        payload.via === "not_required" || payload.via === "no_method"
+          ? payload.via
+          : "challenge",
+    };
+  } catch {
+    return { ok: false };
   }
 }

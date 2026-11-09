@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
         if (role) retry.searchParams.set("role", role);
         retry.searchParams.set(
           "redirect_uri",
-          request.cookies.get(RETURN_COOKIE)?.value || "/chat"
+          request.cookies.get(RETURN_COOKIE)?.value || "/"
         );
         return NextResponse.redirect(retry);
       }
@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
   const state = searchParams.get("state");
   const expectedState = request.cookies.get(STATE_COOKIE)?.value;
   const codeVerifier = request.cookies.get(VERIFIER_COOKIE)?.value;
-  const returnTo = request.cookies.get(RETURN_COOKIE)?.value || "/chat";
+  const returnTo = request.cookies.get(RETURN_COOKIE)?.value || "/";
 
   if (
     !code ||

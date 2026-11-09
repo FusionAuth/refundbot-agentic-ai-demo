@@ -60,7 +60,7 @@ export default function AuthorizationTrace({
   return (
     <div className="rounded-xl border border-line bg-card shadow-sm">
       <div className="border-b border-line px-5 py-3">
-        <h2 className="font-bold text-ink font-[family-name:var(--font-display)]">
+        <h2 className="font-bold text-ink font-display">
           Authorization trace
         </h2>
         <p className="text-xs text-ink-soft">
@@ -80,11 +80,11 @@ export default function AuthorizationTrace({
             return (
               <li key={i} className={`ia-node ${c.dot} ia-animate-in`}>
                 <div className="flex flex-wrap items-center gap-2 text-ink">
-                  <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-ink-soft font-[family-name:var(--font-mono)]">
+                  <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-ink-soft font-mono">
                     {LAYER_LABEL[step.layer]}
                   </span>
                   <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-semibold font-[family-name:var(--font-mono)] ${c.badge}`}
+                    className={`rounded-full px-2 py-0.5 text-xs font-semibold font-mono ${c.badge}`}
                   >
                     {step.label}
                   </span>

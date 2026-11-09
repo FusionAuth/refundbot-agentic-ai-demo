@@ -16,7 +16,7 @@ export default function FgaModeBanner({ mode }: { mode: "live" | "demo" }) {
         <span>
           <strong className="font-semibold">Live FGA.</strong> Every resource decision
           in the trace below came from a real FusionAuth FGA{" "}
-          <code className="font-[family-name:var(--font-mono)]">check</code> —
+          <code className="font-mono">check</code> —
           relationship cascade and all — with zero app-code traversal.
         </span>
       </div>
@@ -29,7 +29,7 @@ export default function FgaModeBanner({ mode }: { mode: "live" | "demo" }) {
     >
       <span className="font-semibold">Showing demo authorization.</span> No Permify
       server is reachable at{" "}
-      <code className="font-[family-name:var(--font-mono)]">PERMIFY_URL</code>, so the
+      <code className="font-mono">PERMIFY_URL</code>, so the
       resource-level decisions came from an in-memory app-code cascade resolver — the
       very thing FGA replaces. Start Permify (see the README); the schema loads itself
       and these checks go live.

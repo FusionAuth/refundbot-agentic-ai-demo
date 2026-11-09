@@ -6,33 +6,41 @@ import { usePathname } from "next/navigation";
 interface TopNavProps {
   name: string;
   isAdmin: boolean;
+  /** Holds an employee role — sees the approval console and the original employee demo. */
+  isStaff?: boolean;
 }
 
-const BASE_LINKS = [{ href: "/chat", label: "Ask Fusion" }];
+const BASE_LINKS = [{ href: "/refund", label: "RefundBot" }];
+const STAFF_LINKS = [
+  { href: "/support/approvals", label: "Approvals" },
+  { href: "/chat", label: "Ask Fusion" },
+];
 
 /**
  * The signed-in chrome: InFusion Agent lockup, section links (Admin only shows
  * for the admin role), and a sign-out that hits the /api/auth/logout SSO round
  * trip.
  */
-export default function TopNav({ name, isAdmin }: TopNavProps) {
+export default function TopNav({ name, isAdmin, isStaff }: TopNavProps) {
   const pathname = usePathname();
-  const links = isAdmin
-    ? [...BASE_LINKS, { href: "/admin", label: "Admin" }]
-    : BASE_LINKS;
+  const links = [
+    ...BASE_LINKS,
+    ...(isStaff || isAdmin ? STAFF_LINKS : []),
+    ...(isAdmin ? [{ href: "/admin", label: "Admin" }] : []),
+  ];
 
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-card/90 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3">
-        <Link href="/chat" className="flex items-center gap-2.5">
+        <Link href="/" className="flex items-center gap-2.5">
           <span
-            className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-sm font-bold text-white font-[family-name:var(--font-display)]"
+            className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-sm font-bold text-white font-display"
             aria-hidden="true"
           >
-            IA
+            RB
           </span>
-          <span className="text-base font-bold tracking-tight text-ink font-[family-name:var(--font-display)]">
-            InFusion Agent
+          <span className="text-base font-bold tracking-tight text-ink font-display">
+            RefundBot
           </span>
         </Link>
 

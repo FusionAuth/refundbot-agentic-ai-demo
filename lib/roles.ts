@@ -128,3 +128,15 @@ export function rolesAllowTool(roles: string[], tool: ToolName): boolean {
 export function rolesForTool(tool: ToolName): string[] {
   return definitionForTool(tool)?.defaultForRoles ?? [];
 }
+
+/**
+ * RefundBot's support console reuses the Works Application-Role pattern: any of the
+ * existing employee roles (or the admin role) may open /support/approvals and approve
+ * or deny an escalated refund. Read off the verified access token, never UI state.
+ */
+export function isSupportStaff(roles: string[]): boolean {
+  return (
+    isAdmin(roles) ||
+    [ROLE_EMPLOYEE, ROLE_MANAGER, ROLE_IT_ADMIN].some((r) => hasRole(roles, r))
+  );
+}

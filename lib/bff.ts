@@ -107,7 +107,8 @@ function appOrigin() {
  * so /api/auth/login can't be turned into an open redirect.
  */
 export function safeReturnTo(raw: string | null): string {
-  const fallback = "/chat";
+  // "/" routes by role: support staff to the approval console, everyone else to RefundBot.
+  const fallback = "/";
   if (!raw) return fallback;
   try {
     const url = new URL(raw, fusionAuthConfig.appBaseUrl);

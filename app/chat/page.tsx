@@ -32,7 +32,7 @@ export default async function ChatPage() {
     <Shell session={session}>
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-ink font-[family-name:var(--font-display)]">
+          <h1 className="text-2xl font-bold tracking-tight text-ink font-display">
             Ask Fusion
           </h1>
           <p className="text-sm text-ink-soft">
@@ -43,7 +43,7 @@ export default async function ChatPage() {
         </div>
       </div>
 
-      <div className="mb-5 space-y-3">
+      <div className="mb-5 space-y-3" hidden>
         <AgentModeBanner mode={mode} />
         <FgaModeBanner mode={fgaMode} />
       </div>

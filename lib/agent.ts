@@ -120,12 +120,12 @@ export function agentMode(): "live" | "scripted" {
  * (`search_public_docs`) proxies out to a third party and is allowed ~32s of its own, so
  * a tighter ceiling here would cut off the very call it is waiting for.
  */
-function mcpCallDeadlineMs(): number {
+export function mcpCallDeadlineMs(): number {
   return Number(process.env.MCP_CALL_TIMEOUT_MS) || 55_000;
 }
 
 /** A hard bound around a promise — see lib/external-docs.ts for why connect needs one. */
-function withDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+export function withDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const guard = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
@@ -135,8 +135,23 @@ function withDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T
   });
 }
 
-function appBaseUrl(): string {
+export function appBaseUrl(): string {
   return (process.env.APP_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+}
+
+/**
+ * Where the orchestrator reaches its OWN MCP server. The server is this same process, so
+ * on a host like Railway there's no reason to leave the container, go out through the
+ * public edge, and come back in: `MCP_INTERNAL_URL` wins if set, then loopback on the
+ * platform's `PORT`, then APP_BASE_URL (local dev, where PORT is usually unset). The
+ * resource server's checks are identical either way — it verifies the bearer token, not
+ * the network path.
+ */
+export function mcpBaseUrl(): string {
+  const explicit = process.env.MCP_INTERNAL_URL?.trim();
+  if (explicit) return explicit.replace(/\/$/, "");
+  if (process.env.PORT) return `http://127.0.0.1:${process.env.PORT}`;
+  return appBaseUrl();
 }
 
 // ---------------------------------------------------------------------------
@@ -555,7 +570,7 @@ export async function callMcpTool(
   args: Record<string, unknown>,
   accessToken: string
 ): Promise<McpCallResult> {
-  const url = new URL(`${appBaseUrl()}/api/mcp`);
+  const url = new URL(`${mcpBaseUrl()}/api/mcp`);
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: { headers: { Authorization: `Bearer ${accessToken}` } },
   });

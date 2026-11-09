@@ -40,7 +40,7 @@ export default function ScopeConsentPreview() {
             key={role}
             className="flex flex-col rounded-2xl border border-line bg-card p-5 shadow-sm"
           >
-            <h3 className="font-bold text-ink font-[family-name:var(--font-display)]">
+            <h3 className="font-bold text-ink font-display">
               {ROLE_LABEL[role]}
             </h3>
             <p className="mt-1 text-sm text-ink-soft">{ROLE_BLURB[role]}</p>
@@ -50,7 +50,7 @@ export default function ScopeConsentPreview() {
                 const def = scopeDef(id);
                 return (
                   <li key={id} className="flex items-center gap-2 text-xs">
-                    <code className="rounded bg-surface px-1.5 py-0.5 text-brand-ink font-[family-name:var(--font-mono)]">
+                    <code className="rounded bg-surface px-1.5 py-0.5 text-brand-ink font-mono">
                       {id}
                     </code>
                     {def?.requiresConsent ? (

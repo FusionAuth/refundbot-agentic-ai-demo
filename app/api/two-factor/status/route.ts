@@ -44,11 +44,21 @@ export async function POST(request: NextRequest) {
 
     if (!status.challengeRequired) {
       // No fresh challenge needed — grant step-up so the chat turn can proceed.
-      await setStepUpGrant(action);
+      await setStepUpGrant(action, "not_required");
       return NextResponse.json({ challengeRequired: false });
     }
 
     const challenge = await startTwoFactorChallenge({ userId: session.userId });
+
+    // The tenant's step-up policy asked for a challenge, but this user has no method
+    // enrolled — no code can ever arrive. For a RefundBot confirmation, fall back to the
+    // explicit confirm the customer already clicked, and record exactly that (the trace
+    // says "no MFA method enrolled", never implying a challenge happened). Other actions
+    // keep the old behavior: the employee demo's step-up is MFA or nothing.
+    if (challenge.methods.length === 0 && action.startsWith("refund:confirm:")) {
+      await setStepUpGrant(action, "no_method");
+      return NextResponse.json({ challengeRequired: false, noMethodEnrolled: true });
+    }
     return NextResponse.json({
       challengeRequired: true,
       twoFactorId: challenge.twoFactorId,

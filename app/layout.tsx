@@ -23,9 +23,9 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "InFusion Agent — a FusionAuth demo for agentic AI",
+  title: "RefundBot — OAuth Token Exchange for agentic AI",
   description:
-    "An internal AI assistant showing FusionAuth authenticating and authorizing a non-human identity: OAuth-scoped MCP tool calls, scope-filtered RAG, and two independent authorization checks.",
+    "A customer-facing refund agent secured by FusionAuth OAuth Token Exchange (RFC 8693): a fresh, narrower token per service, and an irreversible banking hop gated on two independent human approvals.",
 };
 
 export default function RootLayout({
@@ -39,7 +39,7 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${display.variable} ${body.variable} ${mono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-surface text-ink font-[family-name:var(--font-body)]">
+      <body className="min-h-full flex flex-col bg-surface text-ink font-body">
         {children}
       </body>
     </html>

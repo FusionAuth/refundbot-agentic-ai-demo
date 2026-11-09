@@ -30,7 +30,7 @@ export default function NonHumanIdentityCard({
           <span className="rounded-full bg-brand-soft px-2 py-0.5 text-xs font-semibold text-brand-ink">
             human
           </span>
-          <h3 className="font-bold text-ink font-[family-name:var(--font-display)]">
+          <h3 className="font-bold text-ink font-display">
             Signed-in user
           </h3>
         </div>
@@ -49,7 +49,7 @@ export default function NonHumanIdentityCard({
                 user.scopes.map((s) => (
                   <code
                     key={s}
-                    className="rounded bg-surface px-1.5 py-0.5 text-xs text-brand-ink font-[family-name:var(--font-mono)]"
+                    className="rounded bg-surface px-1.5 py-0.5 text-xs text-brand-ink font-mono"
                   >
                     {s}
                   </code>
@@ -66,7 +66,7 @@ export default function NonHumanIdentityCard({
           <span className="rounded-full bg-signal-soft px-2 py-0.5 text-xs font-semibold text-signal-ink">
             non-human
           </span>
-          <h3 className="font-bold text-ink font-[family-name:var(--font-display)]">
+          <h3 className="font-bold text-ink font-display">
             MCP tool server
           </h3>
         </div>
@@ -97,15 +97,15 @@ export default function NonHumanIdentityCard({
             feature), not an Application grant. Create an{" "}
             <strong className="text-ink">Entity</strong> for the tool server,
             then set{" "}
-            <code className="font-[family-name:var(--font-mono)] text-xs text-ink">
+            <code className="font-mono text-xs text-ink">
               FUSIONAUTH_MCP_CLIENT_ID
             </code>{" "}
             /{" "}
-            <code className="font-[family-name:var(--font-mono)] text-xs text-ink">
+            <code className="font-mono text-xs text-ink">
               _SECRET
             </code>{" "}
             and{" "}
-            <code className="font-[family-name:var(--font-mono)] text-xs text-ink">
+            <code className="font-mono text-xs text-ink">
               FUSIONAUTH_MCP_SCOPE
             </code>{" "}
             to mint and show its own identity here.
@@ -130,7 +130,7 @@ function Row({
       <dt className="text-xs uppercase tracking-wide text-ink-soft">{label}</dt>
       <dd
         className={`truncate text-right text-ink ${
-          mono ? "font-[family-name:var(--font-mono)] text-xs" : ""
+          mono ? "font-mono text-xs" : ""
         }`}
       >
         {value}

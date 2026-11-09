@@ -2,6 +2,11 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { AuthInfo } from "@modelcontextprotocol/server";
 import { scopesFromClaims } from "@/lib/scopes";
 import { rolesFromClaims } from "@/lib/roles";
+import { allServiceAudiences } from "@/lib/refund-services";
+import {
+  cachedExchangeMode,
+  verifySimulatedToken,
+} from "@/lib/simulated-exchange";
 
 /**
  * The MCP resource server's OWN, independent bearer-token verifier.
@@ -82,6 +87,16 @@ export async function verifyMcpToken(
   bearerToken?: string
 ): Promise<AuthInfo | undefined> {
   if (!bearerToken) return undefined;
+
+  // Two kinds of bearer reach this server, verified by the same JWKS path:
+  //   - the signed-in user's own access token (aud = the Application) — the employee
+  //     tools; and
+  //   - an RFC 8693 EXCHANGED token (aud = one RefundBot service Entity, `act` = the
+  //     orchestrator) — the four refund tools.
+  // Which audience a tool demands is the tool's own check (lib/mcp-server.ts); here we
+  // only establish that FusionAuth signed it for one of the audiences we serve.
+  let claims: Record<string, unknown> | undefined;
+  let simulated = false;
   try {
     const [keys, { issuer }] = await Promise.all([
       getMcpJwks(),
@@ -89,29 +104,68 @@ export async function verifyMcpToken(
     ]);
     const { payload } = await jwtVerify(bearerToken, keys, {
       issuer,
-      audience: expectedAudience(),
+      audience: [expectedAudience(), ...allServiceAudiences()],
     });
-
-    const claims = payload as Record<string, unknown>;
-    const scopes = scopesFromClaims(claims);
-    const clientId =
-      (typeof claims.aud === "string" && claims.aud) || expectedAudience();
-
-    return {
-      token: bearerToken,
-      clientId,
-      scopes,
-      expiresAt: typeof claims.exp === "number" ? claims.exp : undefined,
-      extra: {
-        sub: typeof claims.sub === "string" ? claims.sub : undefined,
-        email: typeof claims.email === "string" ? claims.email : undefined,
-        name: typeof claims.name === "string" ? claims.name : undefined,
-        // Roles from the verified token, so the MCP server can enforce the
-        // per-tool role gate independently of the agent sandbox.
-        roles: rolesFromClaims(claims),
-      },
-    };
+    claims = payload as Record<string, unknown>;
   } catch {
-    return undefined;
+    claims = undefined;
+  }
+
+  // The portability fallback: a simulated exchange chain's HS256 token, accepted ONLY
+  // while the app is actually in simulated mode. On a live instance this branch is dead.
+  if (!claims && cachedExchangeMode() === "simulated") {
+    const sim = await verifySimulatedToken(bearerToken, allServiceAudiences());
+    if (sim) {
+      claims = sim as Record<string, unknown>;
+      simulated = true;
+    }
+  }
+  if (!claims) return undefined;
+
+  const aud = Array.isArray(claims.aud)
+    ? claims.aud.filter((a): a is string => typeof a === "string")
+    : typeof claims.aud === "string"
+      ? [claims.aud]
+      : [];
+  const exchanged = !aud.includes(safeAudience());
+  const act =
+    claims.act && typeof claims.act === "object"
+      ? (claims.act as Record<string, unknown>)
+      : undefined;
+
+  const scopes = scopesFromClaims(claims);
+  const clientId = aud[0] || safeAudience();
+
+  return {
+    token: bearerToken,
+    clientId,
+    scopes,
+    expiresAt: typeof claims.exp === "number" ? claims.exp : undefined,
+    extra: {
+      sub: typeof claims.sub === "string" ? claims.sub : undefined,
+      email: typeof claims.email === "string" ? claims.email : undefined,
+      name: typeof claims.name === "string" ? claims.name : undefined,
+      // Roles from the verified token, so the MCP server can enforce the
+      // per-tool role gate independently of the agent sandbox. (An exchanged token
+      // carries none — FusionAuth doesn't copy `roles` — so it can never pass that gate.)
+      roles: rolesFromClaims(claims),
+      // Token-exchange facts, for the refund tools' own audience + actor checks.
+      exchanged,
+      simulated,
+      aud,
+      actSub: typeof act?.sub === "string" ? act.sub : undefined,
+      sid: typeof claims.sid === "string" ? claims.sid : undefined,
+      jti: typeof claims.jti === "string" ? claims.jti : undefined,
+      approvedBy:
+        typeof claims.approved_by === "string" ? claims.approved_by : undefined,
+    },
+  };
+}
+
+function safeAudience(): string {
+  try {
+    return expectedAudience();
+  } catch {
+    return "";
   }
 }

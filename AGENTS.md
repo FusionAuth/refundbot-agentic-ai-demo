@@ -1,10 +1,14 @@
 <!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+## This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
 <!-- END:nextjs-agent-rules -->
 
-# InFusion Agent — repo conventions
+# InFusion Agent / RefundBot — repo conventions
 
 Three authorization layers, and they must stay independent. Don't "simplify" one to call
 another:
@@ -46,5 +50,30 @@ Invariants worth knowing before you edit:
   answer is untrusted content — display it, attribute it, and never let it influence tool
   selection or the planner.
 - `components/ArchitectureDiagram.tsx` and `components/AuthorizationTrace.tsx` render the
-  *same* `TraceStep[]`. A new trace layer needs a `TraceLayer` case in both, or the
-  diagram silently ignores it.
+  *same* `TraceStep[]` (the `/chat` employee demo). A new trace layer needs a `TraceLayer`
+  case in both, or the diagram silently ignores it. RefundBot's trace is a separate model
+  (`ChainEntry[]` in `lib/refund-types.ts`) rendered by both `ExchangeChainTrace.tsx` and
+  `RefundArchitectureDiagram.tsx` — a new entry shape needs handling in both (`toBeats`).
+
+RefundBot (`/refund`, `/support/approvals`) adds a fourth layer — **RFC 8693 Token
+Exchange** — with its own invariants:
+
+- Every hop exchanges the customer's *original* access token, never a previous hop's
+  exchanged token. Chaining would nest `act` and run into Max act claim depth.
+- Only `lib/entities.ts` creates the orchestrator → banking-api Entity Grant, only from
+  `executeBankingHop` in `lib/refund-pipeline.ts`, only after `approvalsSatisfied`, and
+  it is deleted in a `finally` every time. Hold `withBankingLock` around anything that
+  touches or probes that Grant.
+- The four refund MCP tools authorize with `exchangeGate` (exchanged token + own audience
+  + `act.sub` = orchestrator), not scope + role; `authGate` refuses exchanged tokens.
+  Don't merge the two. `process_refund` must keep its own approval-record check —
+  `approved_by` on the token is cross-checked against the record, never trusted alone.
+- Token-exchange refusals go into the trace verbatim (`describeFailure`). Don't
+  paraphrase or swallow them.
+- `RefundRecord.subjectToken` never leaves the server: browsers get `toView(record)`.
+- `lib/mcp-auth.ts` may import `lib/refund-services.ts` and `lib/simulated-exchange.ts`
+  (both import nothing session-related), never `lib/token-exchange.ts` or
+  `lib/session.ts`. Simulated tokens are accepted only while the cached mode is
+  `simulated`.
+- Live Token Exchange is the expected state; the simulated chain is a bannered
+  portability fallback. Don't design UI around it being off.

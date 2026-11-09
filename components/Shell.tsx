@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import TopNav from "@/components/TopNav";
-import { isAdmin } from "@/lib/roles";
+import { isAdmin, isSupportStaff } from "@/lib/roles";
 import type { Session } from "@/lib/session";
 
 /**
@@ -17,10 +17,14 @@ export default function Shell({
 }) {
   return (
     <>
-      <TopNav name={session.name ?? "Employee"} isAdmin={isAdmin(session.roles)} />
+      <TopNav
+        name={session.name ?? session.email ?? "Signed in"}
+        isAdmin={isAdmin(session.roles)}
+        isStaff={isSupportStaff(session.roles)}
+      />
       <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8">{children}</main>
       <footer className="border-t border-line px-5 py-6 text-center text-xs text-ink-soft">
-        InFusion Agent · a FusionAuth demo for agentic AI · not a real assistant
+        RefundBot · built on InFusion Agent · a FusionAuth OAuth Token Exchange demo · no real money moves
       </footer>
     </>
   );

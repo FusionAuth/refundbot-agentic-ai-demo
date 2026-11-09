@@ -3,7 +3,7 @@
 import { useState } from "react";
 import AuthorizationTrace from "@/components/AuthorizationTrace";
 import ArchitectureDiagram from "@/components/ArchitectureDiagram";
-import StepUpSlip, { type StepUpMethod } from "@/components/StepUpSlip";
+import RefundConfirmationSlip, { type StepUpMethod } from "@/components/RefundConfirmationSlip";
 import type { TraceStep, ChatResponse } from "@/lib/agent";
 
 interface ChatMessage {
@@ -33,7 +33,7 @@ interface PendingSlip {
  * what to type.
  */
 const SUGGESTIONS = [
-  "What's our PTO policy?",
+  "What are our refund escalation rules?",
   "Look up Chen Li in the directory",
   "Adjust Chen Li's PTO by -2 days",
   "Show me last month's payroll numbers",
@@ -199,7 +199,7 @@ export default function ChatWindow({
 
       <div className="grid gap-6 lg:grid-cols-[1.1fr_1fr]">
         {/* Chat column */}
-        <div className="flex min-h-[28rem] flex-col rounded-xl border border-line bg-card shadow-sm">
+        <div className="flex min-h-112 flex-col rounded-xl border border-line bg-card shadow-sm">
         <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {messages.length === 0 ? (
             <div className="text-sm text-ink-soft">
@@ -209,19 +209,6 @@ export default function ChatWindow({
                 then may it ask a third-party server about public documentation, and only
                 if nothing else fits does it answer from the model&rsquo;s own knowledge.
               </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {SUGGESTIONS.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => send(s)}
-                    disabled={busy}
-                    className="rounded-full border border-line px-3 py-1.5 text-xs text-ink-soft transition hover:border-brand hover:text-brand-ink disabled:opacity-50"
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
             </div>
           ) : (
             messages.map((m, i) => (
@@ -244,7 +231,7 @@ export default function ChatWindow({
 
           {slip ? (
             <div className="pt-2">
-              <StepUpSlip
+              <RefundConfirmationSlip
                 title={slip.title}
                 methods={slip.methods}
                 busy={busy}
@@ -259,8 +246,24 @@ export default function ChatWindow({
           ) : null}
         </div>
 
+        {/* Starter prompts stay pinned above the input for the whole session, so a
+            viewer can keep walking the story after the first turn. */}
+        <div className="flex flex-wrap gap-2 border-t border-line px-4 pt-3">
+          {SUGGESTIONS.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => send(s)}
+              disabled={busy || slip !== null}
+              className="rounded-full border border-line px-3 py-1.5 text-xs text-ink-soft transition hover:border-brand hover:text-brand-ink disabled:opacity-50"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
         <form
-          className="flex gap-2 border-t border-line px-4 py-3"
+          className="flex gap-2 px-4 py-3"
           onSubmit={(e) => {
             e.preventDefault();
             send(input);

@@ -198,6 +198,7 @@ const NODES: Record<NodeId, NodeMeta> = {
 };
 
 // Container frames (drawn behind nodes, not interactive).
+const FULL_WIDTH = 1240; // the full layout's width, for consistent on-screen scale
 const ORCH = { x: 244, y: 150, w: 336, h: 346 };
 const MCP = { x: 676, y: 150, w: 340, h: 346 };
 
@@ -213,7 +214,8 @@ type EdgeId =
   | "exec"
   | "fga_check"
   | "external_call"
-  | "reply";
+  | "reply"
+  | "reply_direct";
 
 interface EdgeMeta {
   d: string;
@@ -285,6 +287,9 @@ const EDGES: Record<EdgeId, EdgeMeta> = {
     lx: 560,
     ly: 628,
   },
+  // The planner answering on its own (model knowledge): straight back under the
+  // `ask` arrow, so the round trip never touches a tool.
+  reply_direct: { d: "M278,252 H204", label: "reply", lx: 241, ly: 270 },
 };
 
 // Tool leaves rendered inside the `tools` node, highlighted when active.
@@ -297,6 +302,77 @@ const TOOL_ROWS: { tool: string; label: string }[] = [
   // The only handler that leaves the network — hence the node off to the right.
   { tool: "search_public_docs", label: "Public docs (external)" },
 ];
+
+// --- Fitting the canvas to what's visible ----------------------------------
+
+interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const ORCH_CHILDREN: NodeId[] = ["planner", "sandbox", "stepup"];
+const MCP_CHILDREN: NodeId[] = ["verify", "tools"];
+
+/**
+ * A container frame shrunk vertically to the children actually on screen. Its
+ * x-extent stays fixed: edges such as `bearer` start on the frame's side.
+ */
+function fitFrame(frame: Box, children: NodeId[]): Box {
+  const top = Math.min(...children.map((id) => NODES[id].y)) - 34;
+  const bottom = Math.max(...children.map((id) => NODES[id].y + NODES[id].h)) + 20;
+  return { x: frame.x, y: top, w: frame.w, h: bottom - top };
+}
+
+/** Every vertex of an edge path. They're all built from M / H / V commands. */
+function pathPoints(d: string): [number, number][] {
+  const pts: [number, number][] = [];
+  let x = 0;
+  let y = 0;
+  for (const [, cmd, args] of d.matchAll(/([MHV])\s*([-\d.,\s]+)/g)) {
+    const n = args.split(/[\s,]+/).filter(Boolean).map(Number);
+    if (cmd === "M") [x, y] = n;
+    else if (cmd === "H") x = n[0];
+    else y = n[0];
+    pts.push([x, y]);
+  }
+  return pts;
+}
+
+/** The bounding box of every drawn element, padded — used as the SVG viewBox. */
+function fitViewBox(boxes: Box[], edges: EdgeId[]): Box {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const add = (x: number, y: number) => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  };
+  boxes.forEach((b) => {
+    add(b.x, b.y);
+    add(b.x + b.w, b.y + b.h);
+  });
+  edges.forEach((id) => {
+    const e = EDGES[id];
+    pathPoints(e.d).forEach(([x, y]) => add(x, y));
+    if (e.label && e.lx !== undefined && e.ly !== undefined) {
+      const half = (e.label.length * 6.8) / 2; // 11px mono ≈ 6.6px per glyph
+      add(e.lx - half, e.ly - 12);
+      add(e.lx + half, e.ly + 4);
+    }
+  });
+  const pad = 24;
+  return {
+    x: minX - pad,
+    y: minY - pad,
+    w: maxX - minX + pad * 2,
+    h: maxY - minY + pad * 2,
+  };
+}
 
 // --- Trace step → node/edge mapping ----------------------------------------
 
@@ -333,15 +409,14 @@ function mapStep(step: TraceStep): StepTargets {
         };
       }
       if (step.label.startsWith("No internal tool")) {
+        // No reply yet: the external stage that follows decides where the answer
+        // comes from, and draws its own route back to the client.
         return {
           marks: [
             { node: "client", v: "info" },
             { node: "planner", v: "info" },
           ],
-          edges: [
-            { edge: "request", v: "info" },
-            { edge: "reply", v: "info" },
-          ],
+          edges: [{ edge: "request", v: "info" }],
         };
       }
       return {
@@ -388,14 +463,44 @@ function mapStep(step: TraceStep): StepTargets {
       // leave the boundary) and the model's own knowledge (which reaches nothing).
       const viaTool = /public docs|external tool/i.test(step.label);
       if (!viaTool) {
-        return { marks: [{ node: "planner", v }], edges: [] };
+        // Model knowledge: the planner answers the client directly — no tool, no
+        // resource server, so the reply must not appear to come from either.
+        return {
+          marks: [
+            { node: "planner", v },
+            { node: "client", v: "info" },
+          ],
+          edges: [{ edge: "reply_direct", v }],
+        };
       }
+      if (v === "denied") {
+        // The external server didn't answer; a model-knowledge step follows and
+        // carries the reply.
+        return {
+          marks: [
+            { node: "external", v },
+            { node: "tools", v: "allowed" },
+          ],
+          edges: [
+            { edge: "exec", v: "allowed" },
+            { edge: "external_call", v },
+          ],
+          tool: "search_public_docs",
+        };
+      }
+      // Answered from public docs. The route emits no separate `result` step on
+      // this path, so this step closes the loop back to the client itself.
       return {
         marks: [
           { node: "external", v },
-          { node: "tools", v },
+          { node: "tools", v: "allowed" },
+          { node: "client", v: "info" },
         ],
-        edges: [{ edge: "external_call", v }],
+        edges: [
+          { edge: "exec", v: "allowed" },
+          { edge: "external_call", v },
+          { edge: "reply", v: "allowed" },
+        ],
         tool: "search_public_docs",
       };
     }
@@ -509,6 +614,7 @@ export default function ArchitectureDiagram({
   const reduce = usePrefersReducedMotion();
   const revealed = useProgressiveReveal(steps.length, reduce);
   const [hovered, setHovered] = useState<NodeId | null>(null);
+  const [open, setOpen] = useState(true);
 
   const view = useMemo(() => {
     const nodeState: Record<NodeId, Vis> = {
@@ -563,28 +669,81 @@ export default function ArchitectureDiagram({
   const plannerSubtitle =
     mode === "live" ? "Claude LLM · picks the tool" : "scripted · picks the tool";
 
+  // Only what this turn has actually touched is drawn. Idle nodes, their edges,
+  // and empty container frames stay off the canvas so the path reads cleanly.
+  const nodeVisible = (id: NodeId) => view.nodeState[id] !== "idle";
+  const edgeVisible = (id: EdgeId) =>
+    // The login happened before the turn; draw it only once FusionAuth is in play.
+    id === "login" ? nodeVisible("fusionauth") : view.edgeState[id] !== undefined;
+  const orchVisible = ORCH_CHILDREN.some(nodeVisible);
+  const mcpVisible = MCP_CHILDREN.some(nodeVisible);
+  const hasActivity = revealed > 0;
+
+  const visibleNodes = (Object.keys(NODES) as NodeId[]).filter(nodeVisible);
+  const visibleEdges = (Object.keys(EDGES) as EdgeId[]).filter(edgeVisible);
+  const orchFrame = orchVisible
+    ? fitFrame(ORCH, ORCH_CHILDREN.filter(nodeVisible))
+    : null;
+  const mcpFrame = mcpVisible ? fitFrame(MCP, MCP_CHILDREN.filter(nodeVisible)) : null;
+  const vb = fitViewBox(
+    [
+      ...visibleNodes.map((id) => NODES[id]),
+      ...(orchFrame ? [orchFrame] : []),
+      ...(mcpFrame ? [mcpFrame] : []),
+    ],
+    visibleEdges
+  );
+
   return (
     <div className="rounded-xl border border-line bg-card shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-5 py-3">
-        <div>
-          <h2 className="font-bold text-ink font-[family-name:var(--font-display)]">
-            Request architecture
-          </h2>
-          <p className="text-xs text-ink-soft">
-            Live map of how the components talk for each turn — the same steps as
-            the trace, in space.
-          </p>
-        </div>
-        <Legend />
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2 px-5 py-3 ${
+          open ? "border-b border-line" : ""
+        }`}
+      >
+        <h2>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-controls="ia-diagram-body"
+          className="flex items-start gap-2 text-left"
+        >
+          <span
+            aria-hidden
+            className="mt-0.5 inline-block text-ink-soft transition-transform"
+            style={{ transform: open ? "rotate(90deg)" : "none" }}
+          >
+            ▸
+          </span>
+          <span>
+            <span className="block font-bold text-ink font-display">
+              Request architecture
+            </span>
+            <span className="block text-xs text-ink-soft">
+              Live map of how the components talk for each turn — the same steps as
+              the trace, in space.
+            </span>
+          </span>
+        </button>
+        </h2>
+        {open ? <Legend /> : null}
       </div>
 
-      <div className="px-4 py-4">
+      {open ? (
+      <div id="ia-diagram-body" className="px-4 py-4">
+        {hasActivity ? (
         <svg
-          viewBox="0 0 1240 660"
-          className="h-auto w-full"
+          viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
+          className="mx-auto block h-auto"
           role="img"
           aria-label="Interactive architecture diagram of the InFusion Agent request flow"
-          style={{ fontFamily: "var(--font-body)" }}
+          // Width is a share of the full 1240-unit layout, so boxes keep the same
+          // on-screen size as the turn grows instead of zooming in when few show.
+          style={{
+            fontFamily: "var(--font-body)",
+            width: `${Math.min(100, (vb.w / FULL_WIDTH) * 100)}%`,
+          }}
         >
           <defs>
             {(["gray", "brand", "verified", "denied", "signal", "fga"] as const).map(
@@ -619,18 +778,22 @@ export default function ArchitectureDiagram({
             )}
           </defs>
 
-          {/* Container frames */}
-          <ContainerFrame
-            {...ORCH}
-            label="Agent Orchestrator · Next.js /api/chat"
-          />
-          <ContainerFrame
-            {...MCP}
-            label="MCP Resource Server · /api/mcp"
-          />
+          {/* Container frames — only when one of their components is in play */}
+          {orchFrame ? (
+            <ContainerFrame
+              {...orchFrame}
+              label="Agent Orchestrator · Next.js /api/chat"
+            />
+          ) : null}
+          {mcpFrame ? (
+            <ContainerFrame
+              {...mcpFrame}
+              label="MCP Resource Server · /api/mcp"
+            />
+          ) : null}
 
           {/* Edges (under nodes) */}
-          {(Object.keys(EDGES) as EdgeId[]).map((id) => (
+          {visibleEdges.map((id) => (
             <Edge
               key={id}
               id={id}
@@ -642,7 +805,7 @@ export default function ArchitectureDiagram({
           ))}
 
           {/* Nodes */}
-          {(Object.keys(NODES) as NodeId[]).map((id) => {
+          {visibleNodes.map((id) => {
             if (id === "tools") return null; // rendered separately below
             const subtitle =
               id === "planner" ? plannerSubtitle : NODES[id].subtitle;
@@ -658,25 +821,36 @@ export default function ArchitectureDiagram({
               />
             );
           })}
-          <ToolsNode
-            state={view.nodeState.tools}
-            active={view.activeNodes.includes("tools") && !reduce}
-            hovered={hovered === "tools"}
-            activeTool={view.activeTool}
-            onHover={setHovered}
-          />
+          {nodeVisible("tools") ? (
+            <ToolsNode
+              state={view.nodeState.tools}
+              active={view.activeNodes.includes("tools") && !reduce}
+              hovered={hovered === "tools"}
+              activeTool={view.activeTool}
+              onHover={setHovered}
+            />
+          ) : null}
         </svg>
+        ) : (
+          <p className="rounded-lg border border-dashed border-line bg-surface px-4 py-6 text-center text-xs text-ink-soft">
+            Nothing to show yet — ask something and the components this turn
+            touches will appear here.
+          </p>
+        )}
 
         {/* Caption / phase read-out */}
+        {hasActivity ? (
         <div className="mt-3 rounded-lg border border-line bg-surface px-4 py-2.5">
-          <p className="text-xs font-semibold text-ink font-[family-name:var(--font-mono)]">
+          <p className="text-xs font-semibold text-ink font-mono">
             {caption.title}
           </p>
           {caption.text ? (
             <p className="mt-0.5 text-xs text-ink-soft">{caption.text}</p>
           ) : null}
         </div>
+        ) : null}
       </div>
+      ) : null}
     </div>
   );
 }
@@ -697,7 +871,7 @@ function ContainerFrame({
   label: string;
 }) {
   return (
-    <g>
+    <g className="ia-appear">
       <rect
         x={x}
         y={y}
@@ -738,7 +912,7 @@ function Edge({
   // edges take their status color.
   const color = dim ? "var(--color-ink-soft)" : STROKE[state];
   return (
-    <g opacity={dim ? 0.5 : 1}>
+    <g opacity={dim ? 0.5 : 1} className="ia-appear">
       <path
         d={meta.d}
         fill="none"
@@ -790,6 +964,7 @@ function Node({
       onMouseLeave={() => onHover(null)}
       onFocus={() => onHover(id)}
       onBlur={() => onHover(null)}
+      className="ia-appear"
       style={{ cursor: "pointer", outline: "none" }}
     >
       <rect
@@ -852,6 +1027,7 @@ function ToolsNode({
       onMouseLeave={() => onHover(null)}
       onFocus={() => onHover("tools")}
       onBlur={() => onHover(null)}
+      className="ia-appear"
       style={{ cursor: "pointer", outline: "none" }}
     >
       <rect
@@ -910,7 +1086,6 @@ function Legend() {
     { label: "step-up", color: "var(--color-signal)" },
     { label: "fga", color: "var(--color-fga)" },
     { label: "active", color: "var(--color-brand)" },
-    { label: "idle", color: "var(--color-line)" },
   ];
   return (
     <ul className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -920,7 +1095,7 @@ function Legend() {
             className="inline-block h-2.5 w-2.5 rounded-full"
             style={{ backgroundColor: it.color }}
           />
-          <span className="text-[0.7rem] text-ink-soft font-[family-name:var(--font-mono)]">
+          <span className="text-[0.7rem] text-ink-soft font-mono">
             {it.label}
           </span>
         </li>

@@ -24,11 +24,11 @@ export default function FgaSchemaViewer({ schema }: { schema: string }) {
         className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
       >
         <span>
-          <span className="block font-bold text-ink font-[family-name:var(--font-display)]">
+          <span className="block font-bold text-ink font-display">
             The Permify schema
           </span>
           <span className="mt-0.5 block text-sm text-ink-soft">
-            <code className="font-[family-name:var(--font-mono)]">
+            <code className="font-mono">
               permify/schema.perm
             </code>{" "}
             — the source of truth for every resource decision.
@@ -59,7 +59,7 @@ export default function FgaSchemaViewer({ schema }: { schema: string }) {
             </button>
           </div>
           <pre className="overflow-x-auto rounded-lg border border-line bg-ink px-4 py-3 text-xs leading-relaxed text-white">
-            <code className="font-[family-name:var(--font-mono)]">
+            <code className="font-mono">
               {lines.map((line, i) => {
                 // A permission that reaches through a relation into another entity.
                 const isCascade = /=\s*.*\b\w+\.\w+/.test(line);
@@ -80,13 +80,13 @@ export default function FgaSchemaViewer({ schema }: { schema: string }) {
           </pre>
           <p className="mt-3 text-xs text-ink-soft">
             The highlighted lines reach <em>through</em> a relation into another entity:{" "}
-            <code className="font-[family-name:var(--font-mono)]">
+            <code className="font-mono">
               employee#adjust_pto
             </code>{" "}
             resolves via the employee&rsquo;s{" "}
-            <code className="font-[family-name:var(--font-mono)]">team</code> to that
+            <code className="font-mono">team</code> to that
             team&rsquo;s manager — or, one hop further, to the organization&rsquo;s{" "}
-            <code className="font-[family-name:var(--font-mono)]">hr</code>. Permify
+            <code className="font-mono">hr</code>. Permify
             walks it; the app just asks.
           </p>
         </div>

@@ -208,12 +208,12 @@ export default function FgaRelationshipAdmin({
         onSubmit={grant}
         className="rounded-xl border border-line bg-card p-5 shadow-sm"
       >
-        <p className="font-bold text-ink font-[family-name:var(--font-display)]">
+        <p className="font-bold text-ink font-display">
           Grant a relation
         </p>
         <p className="mt-1 text-sm text-ink-soft">
           Writes one Permify relation tuple. Granting{" "}
-          <code className="font-[family-name:var(--font-mono)] text-xs">
+          <code className="font-mono text-xs">
             organization#hr
           </code>{" "}
           cascades to every team&rsquo;s payroll and every employee&rsquo;s PTO —
@@ -288,7 +288,7 @@ export default function FgaRelationshipAdmin({
         </div>
 
         {selectedEntity ? (
-          <p className="mt-3 text-xs text-ink-soft font-[family-name:var(--font-mono)]">
+          <p className="mt-3 text-xs text-ink-soft font-mono">
             {selectedEntity.type}:{selectedEntity.id}#{relation}@user:&lt;resolved from
             email&gt;
           </p>
@@ -311,10 +311,10 @@ export default function FgaRelationshipAdmin({
             className="rounded-xl border border-line bg-card p-5 shadow-sm"
           >
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-bold text-ink font-[family-name:var(--font-display)]">
+              <span className="font-bold text-ink font-display">
                 {row.label}
               </span>
-              <span className="rounded-full bg-surface px-2 py-0.5 text-[11px] font-semibold text-ink-soft font-[family-name:var(--font-mono)]">
+              <span className="rounded-full bg-surface px-2 py-0.5 text-[11px] font-semibold text-ink-soft font-mono">
                 {row.entityType}:{row.entityId}
               </span>
             </div>
@@ -336,7 +336,7 @@ export default function FgaRelationshipAdmin({
                         >
                           <div className="min-w-0">
                             <p className="truncate text-sm text-ink">{m.label}</p>
-                            <p className="truncate text-[11px] text-ink-soft font-[family-name:var(--font-mono)]">
+                            <p className="truncate text-[11px] text-ink-soft font-mono">
                               user:{m.userId}
                             </p>
                           </div>

@@ -8,6 +8,9 @@ import FgaRelationshipAdmin, {
   type FgaEntityChoice,
   type FgaEntityRow,
 } from "@/components/FgaRelationshipAdmin";
+import TokenExchangeAuditPanel from "@/components/TokenExchangeAuditPanel";
+import DemoResetPanel from "@/components/DemoResetPanel";
+import { allRefunds } from "@/lib/approvals";
 import { getSession } from "@/lib/session";
 import { isAdmin, primaryRoleBadge } from "@/lib/roles";
 import {
@@ -39,10 +42,15 @@ export const dynamic = "force-dynamic";
  * gates this page, and what you edit inside it are Permify RELATIONS. Revoke a relation
  * here and the next chat turn changes — same token, same scopes, different answer.
  */
-export default async function AdminPage() {
+export default async function AdminPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ txn?: string }>;
+}) {
+  const { txn } = await searchParams;
   const session = await getSession();
   if (!session) redirect("/api/auth/login?redirect_uri=/admin");
-  if (!isAdmin(session.roles)) redirect("/chat");
+  if (!isAdmin(session.roles)) redirect("/");
 
   // All degrade honestly: null identity → "not connected"; null roster → "unavailable";
   // unreachable Permify → the in-memory fallback plus a banner that says so.
@@ -86,7 +94,7 @@ export default async function AdminPage() {
   return (
     <Shell session={session}>
       <div className="max-w-3xl">
-        <h1 className="text-3xl font-bold tracking-tight text-ink font-[family-name:var(--font-display)]">
+        <h1 className="text-3xl font-bold tracking-tight text-ink font-display">
           Admin console
         </h1>
         <p className="mt-2 text-ink-soft">
@@ -97,14 +105,34 @@ export default async function AdminPage() {
         </p>
       </div>
 
+      {/* RefundBot — the app's exchange chain next to FusionAuth's own audit log */}
+      <section className="mt-8">
+        <h2 className="font-bold text-ink font-display">
+          RefundBot · Token Exchange
+        </h2>
+        <p className="mb-3 text-sm text-ink-soft">
+          Left: the exchange chain this app recorded. Right: the same transaction pulled
+          straight from FusionAuth&rsquo;s Token Exchange Audit Log — an independent,
+          first-party record of every exchange the orchestrator attempted.
+        </p>
+        <div className="mb-4">
+          <DemoResetPanel
+            customers={[...new Set(allRefunds().map((r) => r.customerLabel))].filter((c) =>
+              c.includes("@")
+            )}
+          />
+        </div>
+        <TokenExchangeAuditPanel selectedId={txn} />
+      </section>
+
       {/* Scope catalog */}
       <section className="mt-8 overflow-hidden rounded-xl border border-line bg-card shadow-sm">
         <div className="border-b border-line px-5 py-3">
-          <h2 className="font-bold text-ink font-[family-name:var(--font-display)]">
+          <h2 className="font-bold text-ink font-display">
             Scope catalog
           </h2>
           <p className="text-sm text-ink-soft">
-            One source of truth (<code className="font-[family-name:var(--font-mono)] text-xs">lib/scopes.ts</code>)
+            One source of truth (<code className="font-mono text-xs">lib/scopes.ts</code>)
             used by login (which scopes to request), the sandbox pre-check, and
             the MCP server. A tool needs its scope <em>and</em> an allowed role.
             {missingScopes.size > 0 ? (
@@ -134,7 +162,7 @@ export default async function AdminPage() {
                 <tr key={s.id}>
                   <td className="px-5 py-2">
                     {s.id ? (
-                      <code className="text-brand-ink font-[family-name:var(--font-mono)] text-xs">
+                      <code className="text-brand-ink font-mono text-xs">
                         {s.id}
                       </code>
                     ) : (
@@ -154,7 +182,7 @@ export default async function AdminPage() {
                       </span>
                     ) : null}
                   </td>
-                  <td className="px-5 py-2 font-[family-name:var(--font-mono)] text-xs text-ink">
+                  <td className="px-5 py-2 font-mono text-xs text-ink">
                     {s.tool}
                   </td>
                   <td className="px-5 py-2">
@@ -178,7 +206,7 @@ export default async function AdminPage() {
 
       {/* The two FusionAuth identities */}
       <section className="mt-6">
-        <h2 className="font-bold text-ink font-[family-name:var(--font-display)]">
+        <h2 className="font-bold text-ink font-display">
           Two FusionAuth identities
         </h2>
         <p className="mb-3 text-sm text-ink-soft">
@@ -199,7 +227,7 @@ export default async function AdminPage() {
 
       {/* FusionAuth FGA — the resource layer */}
       <section className="mt-8">
-        <h2 className="font-bold text-ink font-[family-name:var(--font-display)]">
+        <h2 className="font-bold text-ink font-display">
           FusionAuth FGA (Permify)
         </h2>
         <p className="mb-3 text-sm text-ink-soft">
@@ -218,7 +246,7 @@ export default async function AdminPage() {
       {/* Demo users + roles (a proxy for who can consent to what) */}
       <section className="mt-6 overflow-hidden rounded-xl border border-line bg-card shadow-sm">
         <div className="border-b border-line px-5 py-3">
-          <h2 className="font-bold text-ink font-[family-name:var(--font-display)]">
+          <h2 className="font-bold text-ink font-display">
             Demo users
           </h2>
           <p className="text-sm text-ink-soft">
@@ -231,7 +259,7 @@ export default async function AdminPage() {
           <p className="px-5 py-4 text-sm text-ink-soft">
             The User Search API didn&rsquo;t return results — it needs the
             Elasticsearch/OpenSearch backend and an API key with the{" "}
-            <code className="font-[family-name:var(--font-mono)] text-xs text-ink">
+            <code className="font-mono text-xs text-ink">
               /api/user/search
             </code>{" "}
             scope. This is the honest fallback, not a crash.
@@ -270,7 +298,7 @@ export default async function AdminPage() {
 
       {/* Hosted account self-service */}
       <section className="mt-6">
-        <h2 className="mb-3 font-bold text-ink font-[family-name:var(--font-display)]">
+        <h2 className="mb-3 font-bold text-ink font-display">
           Your account
         </h2>
         <AccountLinks
