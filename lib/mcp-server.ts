@@ -12,6 +12,7 @@ import {
 } from "@/lib/refund-data";
 import {
   findRefundInSession,
+  findRefundWithoutSid,
   approvalsSatisfied,
   approvalsRefused,
 } from "@/lib/approvals";
@@ -79,6 +80,7 @@ interface ExchangedCaller {
   sub: string;
   sid?: string;
   jti?: string;
+  authTime?: number;
   approvedBy?: string;
   simulated: boolean;
 }
@@ -120,6 +122,7 @@ function exchangeGate(
       sub,
       sid: extra.sid as string | undefined,
       jti: extra.jti as string | undefined,
+      authTime: typeof extra.authTime === "number" ? extra.authTime : undefined,
       approvedBy: extra.approvedBy as string | undefined,
       simulated: extra.simulated === true,
     },
@@ -221,12 +224,17 @@ export function registerRefundTools(server: McpServer): void {
         errorResult({ ok: false, error: "banking_refused", code, message });
 
       // The service's OWN check of the approval record, looked up by the token's sid —
-      // the correlator FusionAuth carried over from the customer's login.
-      const record = caller.sid ? findRefundInSession(caller.sid, requestId) : undefined;
+      // the correlator FusionAuth carried over from the customer's login. Without a sid,
+      // fall back to (sub, auth_time), both also carried over from the subject token.
+      const record = caller.sid
+        ? findRefundInSession(caller.sid, requestId)
+        : findRefundWithoutSid(requestId, caller.sub, caller.authTime);
       if (!record) {
         return refuse(
           "no_record",
-          `No refund ${requestId} in the session named by this token's sid.`
+          caller.sid
+            ? `No refund ${requestId} in the session named by this token's sid.`
+            : `No sid on the token, and no sid-less refund ${requestId} for this sub + auth_time.`
         );
       }
       if (record.customerId !== caller.sub) {

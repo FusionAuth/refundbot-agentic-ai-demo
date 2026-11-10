@@ -108,6 +108,7 @@ export async function simulatedExchange(
   }
   const token = await new SignJWT({
     sid: subjectClaims.sid,
+    auth_time: subjectClaims.auth_time,
     scope: subjectClaims.scope,
     client_id: orchestratorId(),
     act: { sub: orchestratorId(), sub_profile: "simulated:RefundBot Orchestrator" },

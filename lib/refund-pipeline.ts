@@ -315,9 +315,10 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
       "pipeline",
       "info",
       "correlator: no sid on the subject token",
-      "The customer's access token carries no `sid`, so hops are grouped by the subject " +
-        "token's jti instead. FusionAuth copies `sid` onto every exchanged token when it's " +
-        "present — a hosted-login session normally has one."
+      "The customer's access token carries no `sid` (FusionAuth only adds one when a " +
+        "refresh token is issued), so the request is keyed by the subject token's jti. " +
+        "banking-api will find the approval record by the exchanged token's `sub` + " +
+        "`auth_time` instead, both of which FusionAuth copies from the subject token."
     );
   }
 
@@ -542,7 +543,9 @@ async function executeBankingHop(record: RefundRecord) {
             status: "allowed",
             detail:
               "banking-api verified the token's audience + actor, then checked the " +
-              "approval record for this sid before moving money.",
+              (record.sidSource === "sid"
+                ? "approval record for this sid before moving money."
+                : "approval record for this sub + auth_time (no sid) before moving money."),
           }
         : {
             status: call.reached ? "denied" : "error",

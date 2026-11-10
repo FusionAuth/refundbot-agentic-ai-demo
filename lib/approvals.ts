@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { decodeJwt } from "jose";
 import type {
   ApprovalState,
   ChainEntry,
@@ -32,6 +33,11 @@ export interface RefundRecord {
   customerLabel: string;
   /** Server-only. The customer's original access token; every hop exchanges THIS. */
   subjectToken: string;
+  /**
+   * The subject token's `auth_time`. FusionAuth copies it onto every exchanged token, so
+   * when there's no `sid` it's what ties a banking-api token back to this record's login.
+   */
+  subjectAuthTime?: number;
   orderId: string;
   orderSummary?: string;
   amountCents?: number;
@@ -81,9 +87,18 @@ export function createRefundRecord(input: {
   fga: RefundFgaView;
 }): RefundRecord {
   const now = new Date().toISOString();
+  // The subject token was verified upstream (getSession); this only reads a claim off it.
+  let subjectAuthTime: number | undefined;
+  try {
+    const at = decodeJwt(input.subjectToken).auth_time;
+    subjectAuthTime = typeof at === "number" ? at : undefined;
+  } catch {
+    subjectAuthTime = undefined;
+  }
   const record: RefundRecord = {
     id: `rf_${randomUUID().slice(0, 8)}`,
     ...input,
+    subjectAuthTime,
     needsEmployee: false,
     customer: { state: "pending" },
     employee: { state: "not_required" },
@@ -111,6 +126,25 @@ export function findRefund(id: string): RefundRecord | undefined {
 /** The record for (sid, request id) — what the banking service looks up. */
 export function findRefundInSession(sid: string, id: string): RefundRecord | undefined {
   return queue().get(sid)?.find((r) => r.id === id);
+}
+
+/**
+ * The banking service's lookup when the exchanged token carries no `sid` (the customer's
+ * login produced none). Only matches a record that was itself created without a sid, for
+ * the token's subject, from the same login (`auth_time`, which FusionAuth copies from the
+ * subject token onto every exchanged token). A record keyed by a real sid is never
+ * reachable this way.
+ */
+export function findRefundWithoutSid(
+  id: string,
+  sub: string,
+  authTime: number | undefined
+): RefundRecord | undefined {
+  if (authTime === undefined) return undefined;
+  const record = findRefund(id);
+  if (!record || record.sidSource !== "jti-fallback") return undefined;
+  if (record.customerId !== sub || record.subjectAuthTime !== authTime) return undefined;
+  return record;
 }
 
 export function allRefunds(): RefundRecord[] {

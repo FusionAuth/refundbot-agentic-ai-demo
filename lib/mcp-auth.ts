@@ -153,6 +153,9 @@ export async function verifyMcpToken(
       actSub: typeof act?.sub === "string" ? act.sub : undefined,
       sid: typeof claims.sid === "string" ? claims.sid : undefined,
       jti: typeof claims.jti === "string" ? claims.jti : undefined,
+      // FusionAuth copies auth_time from the subject token onto every exchanged token.
+      // It's the fallback correlator when there's no sid (see findRefundWithoutSid).
+      authTime: typeof claims.auth_time === "number" ? claims.auth_time : undefined,
       approvedBy:
         typeof claims.approved_by === "string" ? claims.approved_by : undefined,
     },
