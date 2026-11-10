@@ -1,8 +1,7 @@
 /**
- * The honest agent-mode banner — mirrors InFusion Market's "Live FGA / demo
- * mode" banner. When ANTHROPIC_API_KEY is set the planner is a real Claude
- * tool-calling loop; when it isn't, a deterministic scripted planner drives tool
- * selection. Crucially, the AUTHORIZATION behavior is identical either way — the
+ * The honest planner banner for the customer's RefundBot chat. When ANTHROPIC_API_KEY
+ * is set the planner is a real Claude tool-calling turn; when it isn't, a deterministic
+ * scripted planner picks the intent. Crucially, the AUTHORIZATION behavior is identical either way — the
  * auth layer never trusts the planner — so the banner is about the planner only.
  */
 export default function AgentModeBanner({ mode }: { mode: "live" | "scripted" }) {
@@ -15,9 +14,9 @@ export default function AgentModeBanner({ mode }: { mode: "live" | "scripted" })
     >
       <span className="font-semibold">Scripted Agent</span> — add{" "}
       <code className="font-mono">ANTHROPIC_API_KEY</code>{" "}
-      for live mode. A deterministic keyword planner is selecting tools right now.
-      It still makes real MCP calls, real scope checks, and real step-up — only
-      the &ldquo;which tool&rdquo; decision is rule-based.
+      for live mode. A deterministic keyword planner is reading the chat right now.
+      Ownership checks, token exchanges, MCP calls, and step-up are all real — only
+      the &ldquo;what did the customer ask for&rdquo; decision is rule-based.
     </div>
   );
 }

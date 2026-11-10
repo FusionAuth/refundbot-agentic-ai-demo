@@ -15,10 +15,10 @@ import {
  * the front end only ever hits this app's own /api/auth/* routes.
  *
  * The concerns handled here, kept deliberately separate:
- *   1. Authorization Code + PKCE against the hosted login, requesting a
- *      role-appropriate set of custom `tools:*` scopes (see lib/scopes.ts).
+ *   1. Authorization Code + PKCE against the hosted login (OIDC base scopes only).
  *   2. JWKS verification of the id_token / access_token for the USER session.
- *   3. Two-Factor "status" + "login" APIs -> step-up before a sensitive tool runs.
+ *   3. Two-Factor "status" + "login" APIs -> the customer's out-of-band refund
+ *      confirmation (step-up MFA).
  *   4. The MCP tool server's OWN non-human identity via the Client Credentials
  *      grant on a FusionAuth Entity (Entity Management) — distinct from the user
  *      it acts for. NOTE: in FusionAuth client_credentials is Entity Management,
@@ -97,7 +97,7 @@ function faClient(): FusionAuthClient {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Authorization Code + PKCE  (with role-appropriate custom scopes)
+// 1. Authorization Code + PKCE
 // ---------------------------------------------------------------------------
 
 /** Well-known OIDC discovery document endpoint for this tenant. */
@@ -111,11 +111,7 @@ function wellKnownUrl() {
 /**
  * Builds the URL that starts the hosted-login redirect. Hand-built because
  * front-channel authorize URLs are browser redirects, not API calls.
- *
- * `scope` is the crux of this app: it's the space-delimited scope string for the
- * signing-in role (see lib/scopes.ts `defaultScopeStringForRole`). An employee's
- * scope string never contains `tools:payroll.read`, so FusionAuth's hosted
- * consent screen never even offers payroll access at that role.
+ * `scope` is the OIDC base scope string from lib/bff.ts.
  */
 export function buildAuthorizeUrl(opts: {
   state: string;
@@ -511,7 +507,7 @@ export async function getMcpServiceIdentity(): Promise<McpServiceIdentity | null
 }
 
 // ---------------------------------------------------------------------------
-// Optional directory enrichment (the lookup_employee tool)
+// Optional user roster (/admin)
 // ---------------------------------------------------------------------------
 
 export interface DirectoryHit {
@@ -519,47 +515,6 @@ export interface DirectoryHit {
   name: string;
   email?: string;
   roles: string[];
-}
-
-/**
- * Searches FusionAuth's users for the directory tool. Uses the app's own API key
- * (a privileged endpoint — never the user's token). Returns null when the search
- * can't run (search backend not configured, key lacks scope, instance
- * unreachable) so the tool falls back to the mock directory with an honest note.
- */
-export async function searchDirectoryUsers(
-  query: string
-): Promise<DirectoryHit[] | null> {
-  const q = query.trim();
-  if (!q) return [];
-  try {
-    const res = await faClient().searchUsersByQuery({
-      search: {
-        queryString: `email:*${q}* OR fullName:*${q}* OR firstName:*${q}* OR lastName:*${q}*`,
-        sortFields: [{ name: "email", order: Sort.asc }],
-        numberOfResults: 10,
-      },
-    });
-    const users = res.response.users ?? [];
-    return users
-      .map((u) => ({
-        id: u.id ?? "",
-        name:
-          u.fullName ||
-          [u.firstName, u.lastName].filter(Boolean).join(" ") ||
-          u.email ||
-          "Unnamed user",
-        email: u.email,
-        roles: (
-          (u.registrations ?? []).find(
-            (r) => r.applicationId === fusionAuthConfig.clientId
-          )?.roles ?? []
-        ).filter((r): r is string => typeof r === "string" && r !== ""),
-      }))
-      .filter((u) => u.id !== "");
-  } catch {
-    return null;
-  }
 }
 
 /** Lists the tenant's users for the /admin consent-status roster. Null when unavailable. */

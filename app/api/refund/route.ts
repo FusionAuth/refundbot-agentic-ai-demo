@@ -30,9 +30,10 @@ export const dynamic = "force-dynamic";
  *   POST { action: "decline", requestId } the customer says no; the Grant is never created
  *   GET  ?requestId=…                     poll one of YOUR requests (the console may approve it)
  *
- * The planner chooses the response; it never decides authorization. Everything from
- * the order's existence to the amount to whether money moves is decided by the
- * services, each reached only through a token FusionAuth agreed to exchange.
+ * The planner chooses the response; it never decides authorization. Whether the
+ * customer may touch the order at all is FusionAuth FGA's call (before any exchange);
+ * the amount and whether money moves are the services', each reached only through a
+ * token FusionAuth agreed to exchange.
  */
 
 function replyFor(view: RefundRequestView): string {
@@ -42,6 +43,9 @@ function replyFor(view: RefundRequestView): string {
     view.trace.some((e) => e.type === "note" && e.label.includes(label));
   switch (view.decision) {
     case "stopped":
+      if (view.fga.ownership && !view.fga.ownership.allowed) {
+        return `I can't refund ${view.orderId} — it isn't on an account you own or share. If it's from a family or shared account, ask the account owner to add you as a delegate.`;
+      }
       if (view.amountCents === undefined) {
         return `I couldn't find an order ${view.orderId} on your account, so there's nothing I can refund. If you think that's wrong, double-check the order number in your confirmation email.`;
       }
@@ -52,8 +56,11 @@ function replyFor(view: RefundRequestView): string {
       return "Something went wrong while processing that, and nothing was charged back. Please try again in a moment.";
     case "awaiting_approvals":
       if (view.customer.state === "pending") {
-        return view.needsEmployee
-          ? `I found ${item} for ${amount}. Refunds over ${formatUsd(view.thresholdCents ?? 0)} on your account also get a quick review by one of our specialists. First, please confirm you want this refund:`
+        if (view.needsEmployee) {
+          return `I found ${item} for ${amount}. Refunds over ${formatUsd(view.floorCents ?? 0)} also get a quick review by one of our specialists. First, please confirm you want this refund:`;
+        }
+        return view.fga.tier?.autoApprove
+          ? `I found ${item} for ${amount}. Your ${view.fga.tier.accountLabel.toLowerCase()} is trusted for refunds up to ${formatUsd(view.fga.tier.capCents)}, so no review is needed — just confirm it's really you:`
           : `I found ${item} for ${amount}, and it's eligible for an instant refund. Please confirm you want to go ahead:`;
       }
       return `Thanks for confirming! A specialist is reviewing your ${amount} refund now — usually within a few minutes. I'll update you right here.`;
@@ -167,9 +174,9 @@ export async function POST(request: NextRequest) {
   }
 
   if (plan.kind === "policy") {
-    // Customer-visible articles only: an empty scope list, whoever is signed in. The
-    // internal escalation notes need tools:kb.read and surface on the support console.
-    const hits = searchKnowledgeBase(plan.query, [], 2);
+    // Customer-visible articles only. The internal escalation notes are a different
+    // audience and only ever surface on the role-gated support console.
+    const hits = searchKnowledgeBase(plan.query, "customer", 2);
     const reply = hits.length
       ? hits.map((h) => `${h.article.title}: ${h.article.body}`).join("\n\n")
       : "I don't have an answer for that one — try asking about our refund window, timing, or why some refunds get reviewed.";

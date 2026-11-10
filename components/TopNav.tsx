@@ -7,15 +7,12 @@ import BrightlineMark from "@/components/BrightlineMark";
 interface TopNavProps {
   name: string;
   isAdmin: boolean;
-  /** Holds an employee role — sees the approval console and the original employee demo. */
+  /** Holds an employee role — sees the approval console. */
   isStaff?: boolean;
 }
 
 const BASE_LINKS = [{ href: "/refund", label: "Help & refunds" }];
-const STAFF_LINKS = [
-  { href: "/support/approvals", label: "Approvals" },
-  { href: "/chat", label: "Ask Fusion" },
-];
+const STAFF_LINKS = [{ href: "/support/approvals", label: "Approvals" }];
 
 /**
  * The signed-in chrome: InFusion Agent lockup, section links (Admin only shows

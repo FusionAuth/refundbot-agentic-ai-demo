@@ -19,6 +19,10 @@ import DocLink from "@/components/DocLink";
  * FusionAuth's refusals are shown verbatim, and on the banking hop the Grant's
  * create → use → revoke lifecycle is drawn inline; revoke is the loudest row.
  *
+ * FusionAuth FGA notes (`layer: "fga"`) appear only as dashed breadcrumbs linking to the
+ * Permissions tab — that's a different system with different fields, rendered by
+ * PermissionsGraph, not merged in here.
+ *
  * `embedded` drops the card chrome so the timeline can sit inside another panel (the
  * refund page's "Behind the scenes" tabs); the approval console and /admin use the card.
  */
@@ -198,6 +202,53 @@ function HopRow({
   );
 }
 
+/**
+ * A breadcrumb from FusionAuth FGA — a different system from the token chain, so it is
+ * drawn differently (dashed, labelled "Permify") and carries no sub/act/sid. It only
+ * points at the Permissions tab, where the relations and attributes actually live.
+ */
+function FgaBreadcrumb({
+  note,
+  last,
+  onShowPermissions,
+}: {
+  note: TraceNoteEntry;
+  last: boolean;
+  onShowPermissions?: () => void;
+}) {
+  const tone =
+    note.status === "allowed"
+      ? "border-verified/40 text-verified"
+      : note.status === "denied"
+        ? "border-denied/40 text-denied"
+        : "border-line text-ink-soft";
+  return (
+    <li className="relative flex gap-3 pb-4 ia-animate-in">
+      {!last ? (
+        <span aria-hidden className="absolute top-7 bottom-0 left-[0.8rem] w-px bg-line" />
+      ) : null}
+      <span className="relative z-10 flex h-[1.6rem] w-[1.6rem] shrink-0 items-center justify-center rounded-full border border-dashed border-brand bg-card text-[0.55rem] font-bold text-brand-ink">
+        FGA
+      </span>
+      <div className={`min-w-0 flex-1 rounded-lg border border-dashed px-2.5 py-1.5 ${tone}`}>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-2">
+          <p className="text-xs font-semibold">{note.label}</p>
+          {onShowPermissions ? (
+            <button
+              type="button"
+              onClick={onShowPermissions}
+              className="text-[0.68rem] font-medium text-brand-ink hover:underline"
+            >
+              Permissions tab →
+            </button>
+          ) : null}
+        </div>
+        {note.detail ? <p className="text-[0.7rem] text-ink-soft">{note.detail}</p> : null}
+      </div>
+    </li>
+  );
+}
+
 function NoteRow({ note, last }: { note: TraceNoteEntry; last: boolean }) {
   const tone =
     note.status === "allowed"
@@ -230,6 +281,7 @@ export default function ExchangeChainTrace({
   mode,
   title = "Token exchange chain",
   embedded = false,
+  onShowPermissions,
 }: {
   entries: ChainEntry[];
   sid?: string;
@@ -237,6 +289,8 @@ export default function ExchangeChainTrace({
   mode?: ExchangeMode;
   title?: string;
   embedded?: boolean;
+  /** Where an FGA breadcrumb's "Permissions tab →" link goes. */
+  onShowPermissions?: () => void;
 }) {
   const hops = entries.filter((e): e is ExchangeHopEntry => e.type === "hop");
   const issued = hops.filter((h) => h.exchange === "allowed");
@@ -285,6 +339,13 @@ export default function ExchangeChainTrace({
           {entries.map((e, i) =>
             e.type === "hop" ? (
               <HopRow key={i} hop={e} customerId={customerId} sid={sid} last={i === entries.length - 1} />
+            ) : e.layer === "fga" ? (
+              <FgaBreadcrumb
+                key={i}
+                note={e}
+                last={i === entries.length - 1}
+                onShowPermissions={onShowPermissions}
+              />
             ) : (
               <NoteRow key={i} note={e} last={i === entries.length - 1} />
             )

@@ -9,8 +9,8 @@ import { lastKnownExchangeMode } from "@/lib/token-exchange";
  * in-flight state with it.
  *
  * What it clears (all in-memory, by design — see README non-goals):
- *   - order books → re-seeded from the template on next lookup (nothing refunded,
- *     value score back to 69, threshold back to $172.50)
+ *   - order books → re-seeded from the template on next lookup (nothing refunded);
+ *     a full reset also restores the shared household / Okafor accounts' orders
  *   - the approval queue → /support/approvals and the /admin audit panel start empty
  *   - the refund budget → refilled (full reset only)
  *
@@ -20,7 +20,9 @@ import { lastKnownExchangeMode } from "@/lib/token-exchange";
  * Grant by hand. Runs under withBankingLock, so it can't interleave with a refund that's
  * executing right now.
  *
- * What it deliberately does NOT touch: FusionAuth users, Entities, standing Grants, and
+ * What it deliberately does NOT touch: FusionAuth FGA relations and attributes (they
+ * describe ownership and who may approve, which a reset doesn't change — edit them in
+ * /admin), FusionAuth users, Entities, standing Grants, and
  * the Token Exchange audit log. That log is FusionAuth's first-party record and isn't
  * ours to erase; /admin simply won't list old transactions once the queue is empty.
  */

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sessionCookieName } from "@/lib/session";
 
-const PROTECTED_PREFIXES = ["/chat", "/admin", "/refund", "/support"];
+const PROTECTED_PREFIXES = ["/admin", "/refund", "/support"];
 
 /**
  * A lightweight presence check only — it confirms the encrypted `ia_session`
@@ -40,5 +40,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/chat/:path*", "/admin/:path*", "/refund/:path*", "/support/:path*"],
+  matcher: ["/admin/:path*", "/refund/:path*", "/support/:path*"],
 };

@@ -41,8 +41,7 @@ function methodHint(methods: StepUpMethod[]): string {
 
 /**
  * The customer's out-of-band refund confirmation — the two-factor step-up slip,
- * repurposed. (It was StepUpSlip; the employee /chat demo still uses it in "code" phase
- * for its payroll/PTO step-up.) Styled as the perforated slip, the shared portfolio
+ * repurposed (it was StepUpSlip). Styled as the perforated slip, the shared portfolio
  * motif. Presentational only; the parent owns state and drives the
  * /api/two-factor/status → /verify round trip.
  *

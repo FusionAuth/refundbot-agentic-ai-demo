@@ -2,10 +2,12 @@ import { randomUUID } from "crypto";
 import type {
   ApprovalState,
   ChainEntry,
+  CustomerHistoryView,
   ExchangeMode,
   RefundDecision,
   RefundRequestView,
 } from "@/lib/refund-types";
+import type { RefundFgaView } from "@/lib/fga-types";
 
 /**
  * The approval queue — in-memory, keyed by the transaction's session id (`sid`), the
@@ -33,11 +35,21 @@ export interface RefundRecord {
   orderId: string;
   orderSummary?: string;
   amountCents?: number;
-  valueScore?: number;
-  thresholdCents?: number;
+  /** The order's store — what the approval cascade checks the employee against. */
+  storeId?: string;
+  history?: CustomerHistoryView;
+  floorCents?: number;
   needsEmployee: boolean;
   customer: { state: ApprovalState; via?: string; at?: string };
-  employee: { state: ApprovalState; employeeId?: string; employeeName?: string; at?: string };
+  employee: {
+    state: ApprovalState;
+    employeeId?: string;
+    employeeName?: string;
+    at?: string;
+    path?: "approve_local" | "approve_escalated";
+  };
+  /** FusionAuth FGA's decisions on this request. Separate from `trace` on purpose. */
+  fga: RefundFgaView;
   decision: RefundDecision;
   /** Set once hop 4 has run — the banking service refuses a second use. */
   executed: boolean;
@@ -66,6 +78,7 @@ export function createRefundRecord(input: {
   subjectToken: string;
   orderId: string;
   mode: ExchangeMode;
+  fga: RefundFgaView;
 }): RefundRecord {
   const now = new Date().toISOString();
   const record: RefundRecord = {
@@ -147,13 +160,14 @@ export function recordCustomerDecision(
 export function recordEmployeeDecision(
   record: RefundRecord,
   approved: boolean,
-  employee: { id: string; name: string }
+  employee: { id: string; name: string; path?: "approve_local" | "approve_escalated" }
 ) {
   record.employee = {
     state: approved ? "approved" : "denied",
     employeeId: employee.id,
     employeeName: employee.name,
     at: new Date().toISOString(),
+    path: employee.path,
   };
   if (!approved) record.decision = "denied";
   touch(record);
@@ -162,10 +176,16 @@ export function recordEmployeeDecision(
 /** The browser-safe projection: everything except the subject token. */
 export function toView(record: RefundRecord): RefundRequestView {
   // Destructure the secret out explicitly so adding a field can't leak it by accident.
-  const { subjectToken: _omit, executed: _executed, ...rest } = record;
+  const { subjectToken: _omit, executed: _executed, storeId: _store, ...rest } = record;
   void _omit;
   void _executed;
-  return { ...rest, trace: [...rest.trace], issuedJtis: [...rest.issuedJtis] };
+  void _store;
+  return {
+    ...rest,
+    trace: [...rest.trace],
+    issuedJtis: [...rest.issuedJtis],
+    fga: { ...rest.fga, approvals: [...rest.fga.approvals] },
+  };
 }
 
 /**

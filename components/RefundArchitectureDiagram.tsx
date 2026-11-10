@@ -6,9 +6,8 @@ import DocLink from "@/components/DocLink";
 import type { DocKey } from "@/lib/docs-links";
 
 /**
- * RefundBot's request-architecture diagram — the /refund counterpart of the /chat
- * demo's ArchitectureDiagram, in the same visual language (container frames, travelling
- * dashes, status colors, progressive playback, hover captions).
+ * RefundBot's request-architecture diagram (container frames, travelling dashes, status
+ * colors, progressive playback, hover captions).
  *
  * It is driven by the SAME `ChainEntry[]` the ExchangeChainTrace lists, expanded into
  * "beats": every hop becomes an exchange beat (orchestrator ⇄ FusionAuth /oauth2/token)
@@ -18,8 +17,10 @@ import type { DocKey } from "@/lib/docs-links";
  * customer's out-of-band confirmation (through FusionAuth's two-factor) or the support
  * console.
  *
- * Kept separate from ArchitectureDiagram on purpose: that one renders `TraceStep[]`, and
- * AGENTS.md requires the two trace models stay apart.
+ * FusionAuth FGA notes (`layer: "fga"`) light their own node below the orchestrator,
+ * reached from the pipeline (ownership, tier) or the support console (approval cascade) —
+ * never via the token endpoint. The detailed picture is the Permissions tab
+ * (components/PermissionsGraph.tsx).
  */
 
 type Vis = "idle" | "info" | "allowed" | "denied" | "required";
@@ -56,6 +57,7 @@ type NodeId =
   | "pipeline"
   | "grants"
   | "verify"
+  | "fga"
   | RefundService;
 
 interface NodeMeta {
@@ -84,7 +86,7 @@ const NODES: Record<NodeId, NodeMeta> = {
     title: "Support employee", subtitle: "/support/approvals",
     doc: { to: "roles", label: "Application roles" },
     description:
-      "The second, independent human. Required above the value-scaled threshold (never below $100). Approve or deny; their user id is checked by banking-api, not just logged.",
+      "The second, independent human. Required above the $100 floor unless Permify auto-approves the account. Which employee may decide is Permify's store → region cascade; their user id is then checked by banking-api, not just logged.",
   },
   fusionauth: {
     x: 640, y: 20, w: 330, h: 92,
@@ -105,7 +107,7 @@ const NODES: Record<NodeId, NodeMeta> = {
     title: "Exchange pipeline", subtitle: "⇅ exchange → narrow token",
     doc: { to: "tokenExchangeGrant", label: "Token exchange grant" },
     description:
-      "For each hop, trades the customer's original access token for one service's audience, then calls that service with the narrower token. Holds the approval queue, keyed by sid.",
+      "Asks FusionAuth FGA `order#request_refund` before hop 1 (a denial means no exchange at all), then for each hop trades the customer's original access token for one service's audience and calls that service with the narrower token. Holds the approval queue, keyed by sid.",
   },
   grants: {
     x: 290, y: 450, w: 250, h: 90,
@@ -113,6 +115,13 @@ const NODES: Record<NodeId, NodeMeta> = {
     doc: { to: "entityGrantsApi", label: "Entity Grant API" },
     description:
       "The only code that creates the orchestrator → banking-api Grant: after both approvals, immediately before the hop-4 exchange — and deletes it in a finally, every time.",
+  },
+  fga: {
+    x: 290, y: 610, w: 250, h: 80,
+    title: "FusionAuth FGA", subtitle: "Permify · permissions/check",
+    accent: "var(--color-fga)",
+    description:
+      "A separate authorization service — no tokens. The pipeline asks order#request_refund before hop 1 (denied = no exchange at all) and account#auto_approve before escalating; the support console asks store#approve_local, then region#approve_escalated. Permify entities here are not FusionAuth Entities.",
   },
   verify: {
     x: 660, y: 300, w: 200, h: 100,
@@ -125,19 +134,19 @@ const NODES: Record<NodeId, NodeMeta> = {
     x: 930, y: 190, w: 270, h: 78,
     title: "order-history-service", subtitle: "hop 1 · standing Grant",
     doc: { to: "entityManagement", label: "Entities" },
-    description: "Does this order exist for this customer? The only source of truth — an empty answer stops the whole chain.",
+    description: "Looks up the order. It answers for any id — ownership was already checked by Permify before this hop ran.",
   },
   "customer-scoring": {
     x: 930, y: 285, w: 270, h: 78,
     title: "customer-scoring-service", subtitle: "hop 2 · standing Grant",
     doc: { to: "entityManagement", label: "Entities" },
-    description: "A mock 0–100 value score that sets the customer's self-service threshold.",
+    description: "The customer's order history — context only. Whether review is skipped is Permify's account#auto_approve.",
   },
   "refund-budget": {
     x: 930, y: 380, w: 270, h: 78,
     title: "refund-budget-service", subtitle: "hop 3 · standing Grant",
     doc: { to: "entityManagement", label: "Entities" },
-    description: "Budget check and the employee-approval threshold. The amount comes from the order record, never the caller.",
+    description: "Budget check and the $100 self-service floor. The amount comes from the order record, never the caller.",
   },
   "banking-api": {
     x: 930, y: 475, w: 270, h: 78,
@@ -170,6 +179,8 @@ type EdgeId =
   | "token"
   | "grant"
   | "call"
+  | "fga-check"
+  | "fga-cascade"
   | `svc-${RefundService}`;
 
 interface EdgeMeta {
@@ -198,13 +209,16 @@ const EDGES: Record<EdgeId, EdgeMeta> = {
   token: { d: "M650,116 V146 H597 V370 H544" },
   grant: { d: "M540,495 H619 V108 H636", label: "create · revoke Grant", lx: 640, ly: 590 },
   call: { d: "M540,350 H656", label: "Bearer", lx: 598, ly: 343 },
+  // FGA calls run down the left of the orchestrator, clear of the token lanes on the right.
+  "fga-check": { d: "M290,380 H262 V635 H286", label: "ownership · tier", lx: 205, ly: 628 },
+  "fga-cascade": { d: "M120,560 V665 H286", label: "approval cascade", lx: 200, ly: 682 },
   "svc-order-history": { d: `M860,350 H895 V${SVC_Y["order-history"]} H926` },
   "svc-customer-scoring": { d: `M860,350 H895 V${SVC_Y["customer-scoring"]} H926` },
   "svc-refund-budget": { d: `M860,350 H895 V${SVC_Y["refund-budget"]} H926` },
   "svc-banking-api": { d: `M860,350 H895 V${SVC_Y["banking-api"]} H926` },
 };
 
-// --- Fitting the canvas to what's visible (same approach as ArchitectureDiagram) ----
+// --- Fitting the canvas to what's visible  ----
 
 interface Box {
   x: number;
@@ -338,6 +352,18 @@ function noteBeat(e: Extract<ChainEntry, { type: "note" }>): Beat {
     : e.status === "required" ? "required"
     : "info";
   const base = { title: e.label, text: e.detail ?? "" };
+  // FusionAuth FGA isn't a node on this diagram — it's a separate system with its own
+  // tab. Its breadcrumbs light the pipeline (which asked) and nothing on the token side.
+  // FusionAuth FGA is drawn as its own node, reached by its own edges — never through
+  // FusionAuth's token endpoint. Cascade checks come from the support console; ownership
+  // and tier checks from the pipeline.
+  if (e.layer === "fga") {
+    const title = `FusionAuth FGA · ${e.label}`;
+    if (/approve_local|approve_escalated/.test(e.label)) {
+      return { ...base, title, nodes: [["console", v], ["fga", v]], edges: [["fga-cascade", v]] };
+    }
+    return { ...base, title, nodes: [["pipeline", "info"], ["fga", v]], edges: [["fga-check", v]] };
+  }
   if (e.layer === "planner") {
     return { ...base, nodes: [["customer", "info"], ["planner", "info"]], edges: [["ask", "info"]] };
   }
@@ -359,7 +385,7 @@ function toBeats(entries: ChainEntry[]): Beat[] {
   return entries.flatMap((e) => (e.type === "hop" ? hopBeats(e) : [noteBeat(e)]));
 }
 
-// --- Hooks (same playback as the /chat diagram) ------------------------------
+// --- Hooks ------------------------------
 
 function usePrefersReducedMotion(): boolean {
   return useSyncExternalStore(
@@ -431,7 +457,7 @@ export default function RefundArchitectureDiagram({
       }
     });
     // The customer logged in before any of this — draw that edge once FusionAuth
-    // itself is in play, the same rule the /chat diagram uses.
+    // itself is in play.
     if (shown.length > 0 && nodeState.fusionauth !== "idle") {
       edgeState.login = edgeState.login ?? "allowed";
       if (nodeState.customer === "idle") nodeState.customer = "info";

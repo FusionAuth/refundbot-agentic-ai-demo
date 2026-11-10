@@ -19,6 +19,8 @@ import {
   type RefundRecord,
 } from "@/lib/approvals";
 import { audienceFor, serviceDef } from "@/lib/refund-services";
+import { checkAutoApprove, checkOrderOwnership, lastFgaMode } from "@/lib/fga";
+import { regionDef, storeDef } from "@/lib/refund-data";
 import {
   formatUsd,
   type ExchangeHopEntry,
@@ -43,9 +45,18 @@ import {
  * refusing; after both approvals, `executeBankingHop` creates the Grant, exchanges, calls,
  * and revokes the Grant — every time, in a `finally`.
  *
+ * Two FusionAuth FGA checks bracket the hops — a separate, independent authorization
+ * layer (lib/fga.ts) that never touches a token:
+ *
+ *   - BEFORE hop 1, `order#request_refund`: does the customer hold `owner` or `delegate`
+ *     on the account this order belongs to? A denial stops here — no exchange is ever
+ *     attempted and no service is touched.
+ *   - AFTER hop 3, `account#auto_approve`: a `trusted` account under its cap skips the
+ *     employee queue. The customer's out-of-band confirmation is required either way.
+ *
  * The planner never reaches this file's decisions. The order id comes from the planner;
- * the amount, the threshold, and whether anything is refunded at all come from the
- * services, through tokens FusionAuth agreed to issue.
+ * ownership, the amount, the escalation, and whether anything is refunded at all come
+ * from Permify and from the services, through tokens FusionAuth agreed to issue.
  */
 
 function now() {
@@ -268,7 +279,35 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
     subjectToken: input.accessToken,
     orderId: input.orderId,
     mode: input.mode,
+    fga: { mode: lastFgaMode(), approvals: [] },
   });
+
+  // FGA gate — before anything else. Permify, not order history, decides whether this
+  // customer may ask about this order at all.
+  const ownership = await checkOrderOwnership(input.customerId, input.orderId);
+  record.fga.mode = lastFgaMode();
+  record.fga.ownership = ownership;
+  if (!ownership.allowed) {
+    record.decision = "stopped";
+    note(
+      record,
+      "fga",
+      "denied",
+      "Permify: order#request_refund DENIED",
+      `${ownership.reason} No token exchange was attempted and no service was called. ` +
+        "See the Permissions tab."
+    );
+    stopRemaining(record, 1, "FusionAuth FGA denied the ownership check — no exchange attempted.");
+    return record;
+  }
+  note(
+    record,
+    "fga",
+    "allowed",
+    `Permify: ownership check passed (${ownership.via ?? "allowed"}) →`,
+    `order#request_refund allowed via \`${ownership.via ?? "?"}\` on ${ownership.accountLabel ?? "the account"}. ` +
+      "Only now does the token chain below begin."
+  );
 
   if (input.sidSource === "jti-fallback") {
     note(
@@ -291,7 +330,7 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
     return record;
   }
   const order = h1.data.order as
-    | { id: string; item: string; totalCents: number; refunded: boolean }
+    | { id: string; item: string; totalCents: number; refunded: boolean; storeId: string }
     | null;
   if (!order) {
     h1.entry.result = `No order ${input.orderId} for this customer.`;
@@ -311,6 +350,11 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
   h1.entry.result = `${order.id} · ${order.item} · ${formatUsd(order.totalCents)}${order.refunded ? " · already refunded" : ""}`;
   record.orderSummary = `${order.item} (${order.id})`;
   record.amountCents = order.totalCents;
+  record.storeId = order.storeId;
+  const store = storeDef(order.storeId);
+  const region = store ? regionDef(store.regionId) : undefined;
+  if (store) record.fga.store = { id: store.id, label: store.label, capCents: store.capCents };
+  if (region) record.fga.region = { id: region.id, label: region.label, capCents: region.capCents };
   if (order.refunded) {
     record.decision = "stopped";
     note(record, "result", "denied", "chain stopped: already refunded", `${order.id} was refunded earlier.`);
@@ -318,7 +362,7 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
     return record;
   }
 
-  // Hop 2 — customer value score.
+  // Hop 2 — customer history (context only; the escalation decision is FGA's).
   const h2 = await standingHop(record, "customer-scoring", {});
   if (!h2.data) {
     record.decision = "failed";
@@ -326,10 +370,17 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
     stopRemaining(record, 3, "Hop 2 failed.");
     return record;
   }
-  record.valueScore = Number(h2.data.score);
-  h2.entry.result = `value score ${record.valueScore}/100`;
+  record.history = {
+    lifetimeSpendCents: Number(h2.data.lifetimeSpendCents),
+    orderCount: Number(h2.data.orderCount),
+    priorRefunds: Number(h2.data.priorRefunds),
+  };
+  h2.entry.result =
+    `${record.history.orderCount} orders · ${formatUsd(record.history.lifetimeSpendCents)} lifetime · ` +
+    `${record.history.priorRefunds} prior refund${record.history.priorRefunds === 1 ? "" : "s"}`;
 
-  // Hop 3 — budget + threshold. The amount comes from the order record, server-side.
+  // Hop 3 — budget + the standard self-service floor. The amount comes from the order
+  // record, server-side.
   const h3 = await standingHop(record, "refund-budget", { orderId: order.id });
   if (!h3.data) {
     record.decision = "failed";
@@ -337,11 +388,10 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
     stopRemaining(record, 4, "Hop 3 failed.");
     return record;
   }
-  record.thresholdCents = Number(h3.data.thresholdCents);
-  record.needsEmployee = h3.data.needsEmployeeApproval === true;
+  record.floorCents = Number(h3.data.floorCents);
+  const aboveFloor = h3.data.aboveFloor === true;
   h3.entry.result =
-    `${formatUsd(order.totalCents)} vs. threshold ${formatUsd(record.thresholdCents)} ` +
-    `(max of ${formatUsd(Number(h3.data.floorCents))} floor, score × $2.50) · ` +
+    `${formatUsd(order.totalCents)} vs. the ${formatUsd(record.floorCents)} self-service floor · ` +
     `budget ${h3.data.withinBudget ? "OK" : "exhausted"}`;
   if (h3.data.withinBudget !== true) {
     record.decision = "stopped";
@@ -349,6 +399,27 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
     stopRemaining(record, 4, "Budget can't cover it.");
     return record;
   }
+
+  // The escalation decision. FusionAuth FGA first: a trusted account under its cap skips
+  // the employee queue. Otherwise the standard path — above the floor means a support
+  // employee, authorized through the store → region cascade on /support/approvals.
+  const tier = ownership.accountEntity
+    ? await checkAutoApprove(input.customerId, ownership.accountEntity, order.totalCents)
+    : undefined;
+  record.fga.tier = tier;
+  record.fga.mode = lastFgaMode();
+  if (tier) {
+    note(
+      record,
+      "fga",
+      tier.autoApprove ? "allowed" : "info",
+      tier.autoApprove
+        ? "Permify: account#auto_approve passed → no employee review"
+        : "Permify: account#auto_approve not granted →",
+      tier.reason
+    );
+  }
+  record.needsEmployee = !tier?.autoApprove && aboveFloor;
 
   record.customer = { state: "pending" };
   record.employee = { state: record.needsEmployee ? "pending" : "not_required" };
@@ -362,8 +433,10 @@ export async function startRefund(input: StartRefundInput): Promise<RefundRecord
       ? "approvals required: customer + support employee"
       : "approval required: customer only",
     record.needsEmployee
-      ? `${formatUsd(order.totalCents)} is above the ${formatUsd(record.thresholdCents)} threshold, so a support employee must approve it AND the customer must confirm out-of-band.`
-      : `${formatUsd(order.totalCents)} is within the ${formatUsd(record.thresholdCents)} threshold — only the customer's out-of-band confirmation is needed.`
+      ? `${formatUsd(order.totalCents)} is above the ${formatUsd(record.floorCents)} self-service floor and the account isn't auto-approved, so a support employee must approve it (Permify store → region cascade) AND the customer must confirm out-of-band.`
+      : tier?.autoApprove
+        ? "Trusted account under its cap — no employee is looped in. The customer's out-of-band confirmation (step-up MFA) is still mandatory: that's \"is this really you\", not \"do you deserve it\"."
+        : `${formatUsd(order.totalCents)} is within the ${formatUsd(record.floorCents)} self-service floor — only the customer's out-of-band confirmation is needed.`
   );
 
   await probeBankingHop(record);

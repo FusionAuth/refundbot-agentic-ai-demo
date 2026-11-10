@@ -2,15 +2,16 @@ import { agentMode } from "@/lib/agent";
 
 /**
  * RefundBot's planner — decides how to RESPOND to the customer, never what's
- * authorized. Same scripted / live-Claude toggle as the employee agent (and the same
- * AgentModeBanner): with ANTHROPIC_API_KEY set Claude picks the intent, otherwise a
- * deterministic keyword planner does.
+ * authorized. A scripted / live-Claude toggle with its own AgentModeBanner: with
+ * ANTHROPIC_API_KEY set Claude picks the intent, otherwise a deterministic keyword
+ * planner does.
  *
  * Its whole output is one of: "start a refund for order X", "answer a policy question",
  * or "say something". It cannot set an amount, skip a hop, or approve anything — the
  * order id it extracts is just a lookup key that hop 1 will confirm or refute. A
  * customer (or a customer's own agent) who talks it into "refund ORD-9999 for $5,000"
- * gets exactly as far as order history lets them, which is nowhere.
+ * gets exactly as far as FusionAuth FGA lets them: `order:ORD-9999#request_refund` is
+ * denied before a single token is exchanged (lib/fga.ts).
  */
 
 export type RefundPlan =
@@ -31,7 +32,7 @@ export function scriptedRefundPlan(message: string): RefundPlan {
   if (orderId && /refund|money back|return|reimburse|charge/.test(lower)) {
     return { kind: "refund", orderId };
   }
-  if (/policy|how long|window|eligible|faq|when will|how do refunds|process/.test(lower)) {
+  if (/policy|how long|window|eligible|faq|when will|how do refunds|process|family|shared|delegate/.test(lower)) {
     return { kind: "policy", query: message };
   }
   if (orderId) return { kind: "refund", orderId };

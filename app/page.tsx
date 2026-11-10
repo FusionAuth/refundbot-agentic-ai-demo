@@ -12,7 +12,7 @@ const ERRORS: Record<string, string> = {
 };
 
 const CUSTOMER_LOGIN = "/api/auth/login?redirect_uri=/refund";
-const STAFF_LOGIN = "/api/auth/login?role=employee&redirect_uri=/support/approvals";
+const STAFF_LOGIN = "/api/auth/login?redirect_uri=/support/approvals";
 
 const PROMISES = [
   {
@@ -50,7 +50,7 @@ export default async function LandingPage({
 
   const { error } = await searchParams;
   const errorMessage = error ? (ERRORS[error] ?? "Sign-in failed. Please try again.") : null;
-  const faq = ARTICLES.filter((a) => a.id.startsWith("kb-refund-"));
+  const faq = ARTICLES.filter((a) => a.audience === "customer");
 
   return (
     <main className="flex-1">
@@ -211,12 +211,6 @@ export default async function LandingPage({
           <div className="flex flex-wrap gap-4">
             <a href={STAFF_LOGIN} className="font-medium text-brand-ink hover:underline">
               Support console sign-in
-            </a>
-            <a
-              href="/api/auth/login?role=employee&redirect_uri=/chat"
-              className="font-medium text-ink-soft hover:text-ink hover:underline"
-            >
-              Employee assistant (Ask Fusion)
             </a>
           </div>
         </div>

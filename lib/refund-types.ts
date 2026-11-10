@@ -1,5 +1,5 @@
 /**
- * Client-safe types for RefundBot's exchange chain. No imports, no secrets — the
+ * Client-safe types for RefundBot's exchange chain. No runtime imports, no secrets — the
  * browser components (`ExchangeChainTrace`, the refund chat, the approval console)
  * `import type` from here, and the server modules build these shapes.
  *
@@ -8,6 +8,8 @@
  * rest are NOTES: planner decisions, approvals landing, the Grant lifecycle on the
  * banking hop. Order is the story, so it's kept as one list rather than two.
  */
+
+import type { RefundFgaView } from "@/lib/fga-types";
 
 export type ExchangeMode = "live" | "simulated";
 
@@ -78,7 +80,12 @@ export interface ExchangeHopEntry {
 
 export interface TraceNoteEntry {
   type: "note";
-  layer: "planner" | "approval" | "pipeline" | "result";
+  /**
+   * `fga` marks a breadcrumb from the separate FusionAuth FGA layer (e.g. "Permify:
+   * ownership check passed →"). Its details live in `RefundRequestView.fga`, rendered by
+   * the Permissions tab — the token chain only points at it.
+   */
+  layer: "planner" | "fga" | "approval" | "pipeline" | "result";
   status: "info" | "allowed" | "denied" | "required" | "error";
   label: string;
   detail?: string;
@@ -88,7 +95,7 @@ export interface TraceNoteEntry {
 export type ChainEntry = ExchangeHopEntry | TraceNoteEntry;
 
 export type RefundDecision =
-  | "stopped" // the pipeline refused before approvals (no order, already refunded, budget)
+  | "stopped" // refused before approvals (FGA ownership, no order, already refunded, budget)
   | "awaiting_approvals"
   | "executing"
   | "refunded"
@@ -106,19 +113,36 @@ export interface RefundRequestView {
   orderId: string;
   orderSummary?: string;
   amountCents?: number;
-  valueScore?: number;
-  thresholdCents?: number;
+  /** Hop 2's informational history. */
+  history?: CustomerHistoryView;
+  /** The standard self-service floor hop 3 compared against. */
+  floorCents?: number;
   needsEmployee: boolean;
   customer: { state: ApprovalState; via?: string; at?: string };
-  employee: { state: ApprovalState; employeeId?: string; employeeName?: string; at?: string };
+  employee: {
+    state: ApprovalState;
+    employeeId?: string;
+    employeeName?: string;
+    at?: string;
+    /** Which FGA path authorized the decision. */
+    path?: "approve_local" | "approve_escalated";
+  };
   decision: RefundDecision;
   confirmationId?: string;
+  /** What FusionAuth FGA decided about this request — the Permissions tab. */
+  fga: RefundFgaView;
   createdAt: string;
   updatedAt: string;
   mode: ExchangeMode;
   trace: ChainEntry[];
   /** jti of every token issued in this transaction, for the /admin audit-log lookup. */
   issuedJtis: string[];
+}
+
+export interface CustomerHistoryView {
+  lifetimeSpendCents: number;
+  orderCount: number;
+  priorRefunds: number;
 }
 
 export function formatUsd(cents: number): string {

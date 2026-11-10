@@ -3,8 +3,8 @@ import { createHash } from "crypto";
 import { EncryptJWT, jwtDecrypt } from "jose";
 import type { AccessToken } from "@fusionauth/typescript-client";
 import { verifyAccessToken, verifyIdToken } from "@/lib/fusionauth";
-import { rolesFromClaims } from "@/lib/roles";
-import { scopesFromClaims } from "@/lib/scopes";
+import { rolesFromClaims, scopesFromClaims } from "@/lib/roles";
+
 
 /**
  * InFusion Agent keeps ONE encrypted, httpOnly session cookie for the signed-in
@@ -15,9 +15,8 @@ import { scopesFromClaims } from "@/lib/scopes";
  * Encryption stops tampering/reading of the cookie, but identity is only trusted
  * after the access token inside it is verified against FusionAuth's JWKS on every
  * read (see getSession -> verifyAccessToken). An expired or revoked-key token
- * therefore reads as logged-out even though the cookie decrypts fine. Roles AND
- * the granted `scope` claim both come off that same verified access token — the
- * scopes are what the agent's sandbox pre-check reads (lib/agent.ts).
+ * therefore reads as logged-out even though the cookie decrypts fine. Roles come off
+ * that same verified access token.
  *
  * The MCP resource server does NOT read this cookie; it verifies the bearer token
  * independently in lib/mcp-auth.ts. That separation is the whole point.
@@ -40,11 +39,7 @@ export interface Session {
   email?: string;
   name?: string;
   roles: string[];
-  /**
-   * The OAuth scopes FusionAuth actually granted, read off the verified access
-   * token's `scope` claim. This — not the user's role, and not any UI state — is
-   * what the agent sandbox and the MCP server independently gate tool calls on.
-   */
+  /** The OAuth scopes FusionAuth granted (OIDC base scopes) — shown on /admin only. */
   scopes: string[];
   /** The user's FusionAuth tenant, off the access token's `tid` claim. */
   tenantId?: string;
@@ -179,8 +174,8 @@ export const sessionCookieName = SESSION_COOKIE;
 // ---------------------------------------------------------------------------
 // Step-up grant — a short-lived, encrypted marker that a fresh two-factor check
 // was just completed for a given action. Written by /api/two-factor/verify (and
-// /status when no challenge is required) and consumed once by /api/chat before a
-// sensitive MCP tool executes. Encrypted with the same key as the session so the
+// /status when no challenge is required) and consumed once by /api/refund when the
+// customer confirms a refund out-of-band. Encrypted with the same key as the session so the
 // browser can't forge it; the jose `exp` enforces freshness.
 // ---------------------------------------------------------------------------
 

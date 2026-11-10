@@ -4,10 +4,9 @@ import { useState } from "react";
 
 /**
  * Shows the actual Permify schema inside the app, so the "why" behind a resource
- * decision is one click away during a demo. The lines that do the reaching-through —
- * the ones naming a related entity's relation or permission (`org.hr`,
- * `team.manage_people`, `space.read`) — are highlighted, because that cascade is the
- * whole point: one tuple, several permissions, no app-code traversal.
+ * decision is one click away during a demo. Highlighted: the line that reaches through a
+ * relation into another entity (`account.request_refund`) and the rule calls that read
+ * an entity's own attributes (`can_approve_amount(cap_cents)`).
  */
 export default function FgaSchemaViewer({ schema }: { schema: string }) {
   const [open, setOpen] = useState(false);
@@ -62,7 +61,7 @@ export default function FgaSchemaViewer({ schema }: { schema: string }) {
             <code className="font-mono">
               {lines.map((line, i) => {
                 // A permission that reaches through a relation into another entity.
-                const isCascade = /=\s*.*\b\w+\.\w+/.test(line);
+                const isCascade = /=\s*.*(\b\w+\.\w+|\w+\(\w+\))/.test(line);
                 return (
                   <span
                     key={i}
@@ -79,15 +78,12 @@ export default function FgaSchemaViewer({ schema }: { schema: string }) {
             </code>
           </pre>
           <p className="mt-3 text-xs text-ink-soft">
-            The highlighted lines reach <em>through</em> a relation into another entity:{" "}
-            <code className="font-mono">
-              employee#adjust_pto
-            </code>{" "}
-            resolves via the employee&rsquo;s{" "}
-            <code className="font-mono">team</code> to that
-            team&rsquo;s manager — or, one hop further, to the organization&rsquo;s{" "}
-            <code className="font-mono">hr</code>. Permify
-            walks it; the app just asks.
+            <code className="font-mono">order#request_refund</code> reaches <em>through</em>{" "}
+            the order&rsquo;s <code className="font-mono">account</code> to its owner or
+            delegate; the approval and auto-approval actions combine a relation with a rule
+            over that same entity&rsquo;s <code className="font-mono">cap_cents</code>,
+            compared against <code className="font-mono">context.data.refund_amount_cents</code>.
+            Permify evaluates it; the app just asks.
           </p>
         </div>
       ) : null}

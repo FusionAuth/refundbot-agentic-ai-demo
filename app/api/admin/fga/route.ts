@@ -9,19 +9,20 @@ import {
   entityLabel,
   ensureFgaBootstrap,
   lastFgaMode,
+  type FgaEntityType,
 } from "@/lib/fga";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Admin relationship management — grant or revoke ANY grantable FGA relation on any
- * organization, team, knowledge-base space, or document, for any user.
+ * Admin relationship management — grant or revoke a user-subject Permify relation on a
+ * region, a store, or a shared customer account.
  *
  * Two different kinds of authorization meet here, on purpose:
  *   - This endpoint is gated by the FusionAuth ADMIN ROLE, read off the verified access
  *     token (coarse, app-level): only an admin may call it at all.
  *   - What it writes are Permify RELATIONS (fine-grained, per-resource): the tuples that
- *     then drive every resource decision in the chat turns.
+ *     then drive ownership and approval decisions on the very next check.
  * AuthN decides who's an admin; AuthZ relations decide what everyone can reach.
  *
  * POST   { email, entityType, entityId, relation }  -> grant  (write tuple)
@@ -63,7 +64,7 @@ async function guard(
 /** Validates the entity + relation pair against the schema's grantable relations. */
 function validateTarget(body: Body):
   | { error: NextResponse }
-  | { entityType: "organization" | "team" | "kb_space" | "kb_doc"; entityId: string; relation: string } {
+  | { entityType: FgaEntityType; entityId: string; relation: string } {
   const { entityType, entityId, relation } = body;
   if (
     typeof entityType !== "string" ||
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Bootstrap WITHOUT seeding: granting a relation to a user must never also hand them
-  // the demo seed tuples for their role.
+  // the demo seed relation for their role.
   await ensureFgaBootstrap();
   await assignRelation(target.entityType, target.entityId, target.relation, user.id);
 

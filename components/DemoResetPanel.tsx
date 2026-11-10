@@ -86,9 +86,9 @@ export default function DemoResetPanel({ customers }: { customers: string[] }) {
         </button>
       </div>
       <p className="mt-2 text-xs text-ink-soft">
-        Orders go back to five unrefunded orders (value score 69, threshold $172.50), the
-        approval queue empties, and the banking-api Grant is confirmed absent. FusionAuth
-        users, Entities, standing Grants, and its audit log are untouched. No restart.
+        Orders go back to unrefunded, the approval queue empties, and the banking-api Grant
+        is confirmed absent. Permify relations, FusionAuth users, Entities, standing
+        Grants, and its audit log are untouched. No restart.
       </p>
       {msg ? (
         <p role="status" className={`mt-2 text-sm font-medium ${msg.ok ? "text-verified" : "text-denied"}`}>

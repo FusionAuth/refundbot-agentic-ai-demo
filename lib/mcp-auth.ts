@@ -1,7 +1,7 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { AuthInfo } from "@modelcontextprotocol/server";
-import { scopesFromClaims } from "@/lib/scopes";
-import { rolesFromClaims } from "@/lib/roles";
+
+import { rolesFromClaims, scopesFromClaims } from "@/lib/roles";
 import { allServiceAudiences } from "@/lib/refund-services";
 import {
   cachedExchangeMode,
@@ -11,12 +11,10 @@ import {
 /**
  * The MCP resource server's OWN, independent bearer-token verifier.
  *
- * This is the SECOND of the two authorization checks the demo makes visible. It
- * deliberately does NOT import verifyAccessToken / getSession from lib/session.ts
+ * It deliberately does NOT import verifyAccessToken / getSession from lib/session.ts
  * or lib/fusionauth.ts — it stands up its own OIDC discovery + JWKS + jwtVerify
- * here, so the check the MCP server performs is genuinely independent of the
- * agent sandbox's check, not the same code called twice. If the sandbox were ever
- * bypassed or wrong, THIS is the check that still has to pass before a tool runs.
+ * here, so the check the MCP server performs is genuinely independent of anything
+ * the orchestrator decided, not the same code called twice.
  *
  * mcp-handler's `withMcpAuth` calls `verifyMcpToken(req, bearerToken)`; returning
  * undefined makes it answer 401 with a `WWW-Authenticate` header pointing at the
@@ -88,11 +86,11 @@ export async function verifyMcpToken(
 ): Promise<AuthInfo | undefined> {
   if (!bearerToken) return undefined;
 
-  // Two kinds of bearer reach this server, verified by the same JWKS path:
-  //   - the signed-in user's own access token (aud = the Application) — the employee
-  //     tools; and
+  // Two kinds of bearer can reach this server, verified by the same JWKS path:
+  //   - the signed-in user's own access token (aud = the Application) — accepted here
+  //     only so the refund tools can refuse it with a precise `not_exchanged` reason; and
   //   - an RFC 8693 EXCHANGED token (aud = one RefundBot service Entity, `act` = the
-  //     orchestrator) — the four refund tools.
+  //     orchestrator) — the only thing the four refund tools serve.
   // Which audience a tool demands is the tool's own check (lib/mcp-server.ts); here we
   // only establish that FusionAuth signed it for one of the audiences we serve.
   let claims: Record<string, unknown> | undefined;
@@ -145,9 +143,8 @@ export async function verifyMcpToken(
       sub: typeof claims.sub === "string" ? claims.sub : undefined,
       email: typeof claims.email === "string" ? claims.email : undefined,
       name: typeof claims.name === "string" ? claims.name : undefined,
-      // Roles from the verified token, so the MCP server can enforce the
-      // per-tool role gate independently of the agent sandbox. (An exchanged token
-      // carries none — FusionAuth doesn't copy `roles` — so it can never pass that gate.)
+      // Roles from the verified token, informational. (An exchanged token carries
+      // none — FusionAuth doesn't copy `roles`.)
       roles: rolesFromClaims(claims),
       // Token-exchange facts, for the refund tools' own audience + actor checks.
       exchanged,

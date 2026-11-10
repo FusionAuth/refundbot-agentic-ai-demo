@@ -4,9 +4,8 @@ import { startOAuthRedirect } from "@/lib/bff";
 /**
  * GET /api/auth/login
  *
- * Starts the Authorization Code + PKCE redirect. A `role` query hint (set by the
- * landing page's "Sign in as …" links) selects which default tool scopes the
- * login requests — an employee's login never even asks for tools:payroll.read.
+ * Starts the Authorization Code + PKCE redirect. Customers and employees sign in the
+ * same way; the Application Role on the resulting token decides where they land.
  */
 export async function GET(request: NextRequest) {
   return await startOAuthRedirect(request);

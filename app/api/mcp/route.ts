@@ -1,5 +1,5 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
-import { registerAgentTools, registerRefundTools } from "@/lib/mcp-server";
+import { registerRefundTools } from "@/lib/mcp-server";
 import { verifyMcpToken } from "@/lib/mcp-auth";
 
 /**
@@ -12,20 +12,19 @@ import { verifyMcpToken } from "@/lib/mcp-auth";
  * verified by our OWN, independent verifier (lib/mcp-auth.ts) — a separate JWKS
  * code path from the human session reader — and a missing/expired/under-verified
  * token is answered with 401 + WWW-Authenticate pointing at the RFC 9728 metadata
- * (app/.well-known/oauth-protected-resource). Per-tool scope checks then run
- * inside each handler (lib/mcp-server.ts). That's the second, independent
- * authorization layer the demo makes visible.
+ * (app/.well-known/oauth-protected-resource). Each tool handler then runs its own
+ * exchangeGate (lib/mcp-server.ts): the token must be an RFC 8693 exchanged token for
+ * that service's own audience, with the orchestrator as actor.
  */
 const baseHandler = createMcpHandler(
   (server) => {
-    registerAgentTools(server);
-    // RefundBot's four pipeline services. Same transport, same bearer verifier — but each
-    // demands an RFC 8693 exchanged token for its own audience (see exchangeGate).
+    // RefundBot's four pipeline services. Each demands an RFC 8693 exchanged token for
+    // its own audience (see exchangeGate).
     registerRefundTools(server);
   },
   {
     serverInfo: {
-      name: "InFusion Agent — MCP Tool Server",
+      name: "RefundBot — MCP Tool Server",
       version: "0.1.0",
     },
   }

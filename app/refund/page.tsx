@@ -6,6 +6,8 @@ import RefundChat from "@/components/RefundChat";
 import { getSession } from "@/lib/session";
 import { agentMode } from "@/lib/agent";
 import { resolveExchangeMode } from "@/lib/token-exchange";
+import FgaModeBanner from "@/components/FgaModeBanner";
+import { syncCustomerFga } from "@/lib/fga";
 
 export const dynamic = "force-dynamic";
 
@@ -13,14 +15,19 @@ export const dynamic = "force-dynamic";
  * Brightline Help — the customer's chat with RefundBot. proxy.ts bounces signed-out
  * visitors to the hosted login; getSession() does the real verification here.
  *
- * The mode banners render only on a degrade (simulated chain / scripted planner): live
- * is the expected state and isn't announced.
+ * The Token Exchange and planner banners render only on a degrade; the FGA banner always
+ * says which engine is answering ("Live FusionAuth FGA" vs. the demo fallback). Loading
+ * the page also writes this customer's Permify relations (owner of their own accounts,
+ * delegate on the shared household account) if they don't exist yet.
  */
 export default async function RefundPage() {
   const session = await getSession();
   if (!session) redirect("/api/auth/login?redirect_uri=/refund");
 
-  const exchange = await resolveExchangeMode();
+  const [exchange, fgaMode] = await Promise.all([
+    resolveExchangeMode(),
+    syncCustomerFga(session.userId),
+  ]);
   const first = (session.name ?? "").split(" ")[0] || undefined;
 
   return (
@@ -33,7 +40,8 @@ export default async function RefundPage() {
           Chat with RefundBot about any order from the last 90 days.
         </p>
       </div>
-      <div className="space-y-3 empty:hidden">
+      <div className="mb-5 space-y-3">
+        <FgaModeBanner mode={fgaMode} />
         <TokenExchangeModeBanner
           mode={exchange.mode}
           reason={exchange.mode === "simulated" ? exchange.reason : undefined}

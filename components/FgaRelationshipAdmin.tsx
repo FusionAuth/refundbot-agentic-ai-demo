@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 
-export type FgaEntityType = "organization" | "team" | "kb_space" | "kb_doc";
+export type FgaEntityType = "region" | "store" | "account";
 
 export interface FgaEntityChoice {
   type: FgaEntityType;
@@ -29,10 +29,9 @@ export interface FgaEntityRow {
 }
 
 const GROUP_LABEL: Record<FgaEntityType, string> = {
-  organization: "Organization",
-  team: "Teams",
-  kb_space: "Knowledge-base spaces",
-  kb_doc: "Individual documents",
+  region: "Regions",
+  store: "Stores",
+  account: "Shared customer accounts",
 };
 
 function entityKey(type: string, id: string) {
@@ -44,10 +43,11 @@ function entityKey(type: string, id: string) {
  * deletes one — both through /api/admin/fga, which re-checks the FusionAuth admin role
  * server-side off the verified access token.
  *
- * The table is the live relationship graph. Changes here change what a user's agent can
- * reach on the very next chat turn, cascade included: revoke your own
- * `team:platform#manager` and the same payroll question flips from a filtered answer to
- * `fga: DENIED` with no sign-out, no new token, and no scope change.
+ * The table is the live relationship graph. Changes here take effect on the very next
+ * check: move an employee from `store:harbor#manager` to `store:downtown#manager` and
+ * the approval they were just refused goes through — no sign-out, no new token, no role
+ * change. Revoke a customer's `account:household#delegate` and their next refund on a
+ * family order is denied before any token exchange.
  */
 export default function FgaRelationshipAdmin({
   entities,
@@ -197,7 +197,7 @@ export default function FgaRelationshipAdmin({
     }
   }
 
-  const groupedChoices = (["organization", "team", "kb_space", "kb_doc"] as const)
+  const groupedChoices = (["region", "store", "account"] as const)
     .map((type) => ({ type, items: entities.filter((e) => e.type === type) }))
     .filter((g) => g.items.length > 0);
 
@@ -213,11 +213,9 @@ export default function FgaRelationshipAdmin({
         </p>
         <p className="mt-1 text-sm text-ink-soft">
           Writes one Permify relation tuple. Granting{" "}
-          <code className="font-mono text-xs">
-            organization#hr
-          </code>{" "}
-          cascades to every team&rsquo;s payroll and every employee&rsquo;s PTO —
-          without a single per-team grant.
+          <code className="font-mono text-xs">region#director</code>{" "}
+          lets that employee approve escalations for every store in the region, up to the
+          region&rsquo;s cap — without a single per-store grant.
         </p>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">

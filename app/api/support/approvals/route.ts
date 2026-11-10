@@ -9,6 +9,8 @@ import {
   toView,
 } from "@/lib/approvals";
 import { maybeExecuteBankingHop } from "@/lib/refund-pipeline";
+import { checkApprover, lastFgaMode, syncEmployeeFga } from "@/lib/fga";
+import { formatUsd } from "@/lib/refund-types";
 
 export const dynamic = "force-dynamic";
 
@@ -18,11 +20,18 @@ export const dynamic = "force-dynamic";
  *   GET                                    the queue (staff only)
  *   POST { requestId, decision }           "approve" | "deny"
  *
- * Gated on the verified token's Application Role, the same pattern as /admin. An
- * employee may not approve their own refund. Approving records WHO approved (their
- * FusionAuth user id), and if the customer has already confirmed, this request runs
- * hop 4 right here: create Grant → exchange → call banking-api → revoke Grant. Denying
- * means the Grant is never created at all.
+ * Two independent gates:
+ *   1. The Application Role (coarse): only support staff reach this route at all.
+ *   2. FusionAuth FGA (per-resource): may THIS employee decide THIS refund? First
+ *      `store#approve_local` on the order's store; failing that,
+ *      `region#approve_escalated` on that store's region. Both carry the amount in
+ *      `context.data`, compared against the entity's own `cap_cents` attribute. A denial
+ *      says why (wrong store vs. over the cap) and, for the wrong store, who to escalate to.
+ *
+ * An employee may not approve their own refund. Approving records WHO approved (their
+ * FusionAuth user id) and via which path, and if the customer has already confirmed, this
+ * request runs hop 4 right here: create Grant → exchange → call banking-api → revoke
+ * Grant. Denying means the Grant is never created at all.
  */
 
 export async function GET() {
@@ -72,7 +81,44 @@ export async function POST(request: NextRequest) {
   }
 
   const approved = body.decision === "approve";
-  const employee = { id: session.userId, name: session.name ?? session.email ?? session.userId };
+  const name = session.name ?? session.email ?? session.userId;
+
+  // FusionAuth FGA: the store → region cascade, with the amount in context.
+  await syncEmployeeFga(session.userId, name, session.roles);
+  const fga = await checkApprover({
+    employeeId: session.userId,
+    employeeName: name,
+    storeId: record.storeId ?? "",
+    amountCents: record.amountCents ?? 0,
+    decision: approved ? "approve" : "deny",
+  });
+  record.fga.approvals.push(fga);
+  record.fga.mode = lastFgaMode();
+  // Breadcrumb for the token chain and the architecture diagram; details live on the
+  // Permissions tab.
+  pushTrace(record, {
+    type: "note",
+    layer: "fga",
+    status: fga.allowed ? "allowed" : "denied",
+    label: fga.allowed
+      ? `Permify: ${fga.path} ALLOWED · ${name}${fga.path === "approve_escalated" ? " (via cascade)" : ""} →`
+      : `Permify: approve_local / approve_escalated DENIED · ${name} →`,
+    detail: fga.suggestion ? `${fga.reason} ${fga.suggestion}` : fga.reason,
+    at: new Date().toISOString(),
+  });
+  if (!fga.allowed) {
+    return NextResponse.json(
+      {
+        error: `Permify denied ${approved ? "approval" : "a decision"} on ${formatUsd(record.amountCents ?? 0)} for ${fga.store.label}: ${fga.reason}`,
+        suggestion: fga.suggestion,
+        fga,
+        request: toView(record),
+      },
+      { status: 403 }
+    );
+  }
+
+  const employee = { id: session.userId, name, path: fga.path };
   recordEmployeeDecision(record, approved, employee);
   pushTrace(record, {
     type: "note",
@@ -82,7 +128,8 @@ export async function POST(request: NextRequest) {
       ? `support employee approved · ${employee.name}`
       : `support employee denied · ${employee.name}`,
     detail: approved
-      ? `Approver user id ${employee.id} recorded against sid ${record.sid}. ` +
+      ? `Approver user id ${employee.id} recorded against sid ${record.sid}, authorized by ` +
+        `Permify ${fga.path === "approve_local" ? `store#approve_local (${fga.store.label})` : `region#approve_escalated (via cascade, ${fga.region.label})`}. ` +
         (record.customer.state === "approved"
           ? "The customer already confirmed, so hop 4 runs now."
           : "Still waiting on the customer's own confirmation.")
