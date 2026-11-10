@@ -321,7 +321,7 @@ export function debitBudget(amountCents: number): boolean {
  */
 export function resetRefundData(customerId?: string): number {
   const store = books();
-  let cleared = 0;
+  let cleared: number;
   if (customerId) {
     cleared = store.delete(customerId) ? 1 : 0;
   } else {

@@ -76,7 +76,7 @@ export default async function LandingPage({
       </header>
 
       {/* Hero */}
-      <section className="bg-gradient-to-b from-brand-soft/60 to-surface">
+      <section className="bg-linear-to-b from-brand-soft/60 to-surface">
         <div className="mx-auto grid max-w-6xl items-center gap-10 px-5 py-14 md:grid-cols-[1.1fr_1fr] md:py-20">
           <div>
             {errorMessage ? (

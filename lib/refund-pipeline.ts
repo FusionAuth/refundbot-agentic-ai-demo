@@ -112,7 +112,7 @@ async function callRefundTool(
       error?: string;
       code?: string;
       message?: string;
-    } = {};
+    };
     try {
       payload = text ? JSON.parse(text) : {};
     } catch {
