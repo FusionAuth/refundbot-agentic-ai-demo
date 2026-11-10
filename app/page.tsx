@@ -11,6 +11,9 @@ const ERRORS: Record<string, string> = {
   access_denied: "Sign-in was cancelled.",
 };
 
+/** In-page anchor for the refund FAQ, shared by the link and the section so they can't drift. */
+const FAQ_ID = "faq";
+
 const CUSTOMER_LOGIN = "/api/auth/login?redirect_uri=/refund";
 const STAFF_LOGIN = "/api/auth/login?redirect_uri=/support/approvals";
 
@@ -104,7 +107,7 @@ export default async function LandingPage({
               >
                 Start a refund
               </a>
-              <a href="#faq" className="px-2 py-3 font-medium text-brand-ink hover:underline">
+              <a href={`#${FAQ_ID}`} className="px-2 py-3 font-medium text-brand-ink hover:underline">
                 Read our refund policy
               </a>
             </div>
@@ -181,7 +184,7 @@ export default async function LandingPage({
       </section>
 
       {/* FAQ — the same customer-visible articles RefundBot answers from */}
-      <section id="faq" className="mx-auto max-w-3xl scroll-mt-6 px-5 py-14">
+      <section id={FAQ_ID} className="mx-auto max-w-3xl scroll-mt-6 px-5 py-14">
         <h2 className="text-2xl font-bold tracking-tight text-ink font-display">Refund questions</h2>
         <div className="mt-6 divide-y divide-line rounded-2xl border border-line bg-card">
           {faq.map((a) => (
