@@ -3,6 +3,7 @@ import { getSession, setStepUpGrant } from "@/lib/session";
 import {
   checkTwoFactorStatus,
   startTwoFactorChallenge,
+  sendEmailEnrollmentCode,
 } from "@/lib/fusionauth";
 
 /**
@@ -50,14 +51,25 @@ export async function POST(request: NextRequest) {
 
     const challenge = await startTwoFactorChallenge({ userId: session.userId });
 
-    // The tenant's step-up policy asked for a challenge, but this user has no method
-    // enrolled — no code can ever arrive. For a RefundBot confirmation, fall back to the
-    // explicit confirm the customer already clicked, and record exactly that (the trace
-    // says "no MFA method enrolled", never implying a challenge happened). Other actions
-    // keep the old behavior: the employee demo's step-up is MFA or nothing.
-    if (challenge.methods.length === 0 && action.startsWith("refund:confirm:")) {
-      await setStepUpGrant(action, "no_method");
-      return NextResponse.json({ challengeRequired: false, noMethodEnrolled: true });
+    // FusionAuth asked for a challenge (the MFA Requirement lambda always does for a
+    // refund confirmation), but this customer has no method enrolled, so no challenge
+    // code can be delivered. Don't wave them through: email a code to the address on the
+    // account. Entering it proves the inbox AND enrolls email as their first method
+    // (/api/two-factor/verify with enroll: true), so the next confirmation is a normal
+    // challenge.
+    if (challenge.methods.length === 0) {
+      if (!session.email) {
+        return NextResponse.json(
+          { error: "No MFA method and no email on this account — confirmation isn't possible." },
+          { status: 409 }
+        );
+      }
+      await sendEmailEnrollmentCode({ email: session.email });
+      return NextResponse.json({
+        challengeRequired: true,
+        enroll: true,
+        methods: [{ id: "enroll-email", method: "email", email: session.email }],
+      });
     }
     return NextResponse.json({
       challengeRequired: true,

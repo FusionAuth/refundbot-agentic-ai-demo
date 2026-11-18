@@ -369,6 +369,36 @@ export async function startTwoFactorChallenge(opts: {
   return { twoFactorId, methods };
 }
 
+/**
+ * The customer has no MFA method, so a step-up challenge can't be delivered. Email a
+ * code to the address on the account instead; entering it both proves possession of the
+ * inbox (the step-up) and enrolls email as their first method (enableEmailTwoFactor).
+ */
+export async function sendEmailEnrollmentCode(opts: { email: string }): Promise<void> {
+  await faClient().sendTwoFactorCodeForEnableDisable({ email: opts.email, method: "email" });
+}
+
+/** Enables email MFA with the code from sendEmailEnrollmentCode. 421 = bad code. */
+export async function enableEmailTwoFactor(opts: {
+  userId: string;
+  email: string;
+  code: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    await faClient().enableTwoFactor(opts.userId, {
+      method: "email",
+      email: opts.email,
+      code: opts.code,
+      applicationId: fusionAuthConfig.clientId,
+    });
+    return { success: true };
+  } catch (err) {
+    const statusCode = (err as { statusCode?: number })?.statusCode;
+    if (statusCode === 421) return { success: false, error: "Incorrect code. Try again." };
+    return { success: false, error: `Verification failed (${statusCode ?? "unknown"}).` };
+  }
+}
+
 /** Completes the step-up challenge with the code the user entered. */
 export async function completeTwoFactorLogin(opts: {
   twoFactorId: string;

@@ -62,7 +62,7 @@ chain, which is the correlator this build uses.
 |---|---|---|
 | 1 | **Per-hop token exchange.** Four independent exchanges of the customer's *original* token, one audience each — the actor chain never nests, so the default Max act claim depth of 2 is plenty | `lib/token-exchange.ts`, `lib/refund-pipeline.ts` |
 | 2 | **Authority that exists on demand.** Hops 1–3 ride standing Entity Grants; hop 4's Grant is created after the approvals and deleted in a `finally` — every time | `lib/entities.ts` |
-| 3 | **FusionAuth refuses, visibly.** Before approvals, hop 4 is *probed*: FusionAuth's Entity engine says no, and its `error` / `error_description` / `error_reason` land in the trace verbatim | `ExchangeChainTrace.tsx` |
+| 3 | **FusionAuth refuses, visibly.** Before approvals, hop 4 is *probed*: FusionAuth's Token Exchange Policy lambda finds no banking-api Grant and says no, and its `error` / `error_description` / `error_reason` land in the trace verbatim | `ExchangeChainTrace.tsx` |
 | 4 | **Order ownership in Permify.** `order#request_refund = account.request_refund`, i.e. `owner or delegate` on the order's account. Checked before hop 1; a denial means no exchange is ever attempted | `checkOrderOwnership` in `lib/fga.ts` |
 | 5 | **An approval cascade with caps.** `store#approve_local` (the employee's own store, under the store's `cap_cents`), else `region#approve_escalated` (the store's region, under its higher cap). A denial says *why* — wrong store or over the cap — and suggests the region director | `checkApprover`, `/support/approvals` |
 | 6 | **A customer trust tier.** `account#auto_approve` = `request_refund` + `tier == 'trusted'` + amount ≤ `cap_cents`. Passing skips the employee queue; the customer's MFA confirmation stays mandatory | `checkAutoApprove` |
@@ -187,7 +187,7 @@ Copy `.env.local.example` to `.env.local` and fill it in.
 | `FUSIONAUTH_CLIENT_ID` / `_SECRET` | The main Application — the user login app (customers and employees) and the JWT `aud` |
 | `FUSIONAUTH_MCP_CLIENT_ID` / `_SECRET` | The tool server's own non-human identity — the **Client Id / secret of a FusionAuth Entity** (client_credentials in FusionAuth is Entity Management, a paid feature — *not* an Application grant). Optional; leave unset to run without the identity card |
 | `FUSIONAUTH_MCP_SCOPE` | *(optional)* The Entity token's scope, `target-entity:<entityId>:<permission>`. Required for the client_credentials grant to succeed |
-| `FUSIONAUTH_API_KEY` | Server-side calls: two-factor (the customer's confirmation), `GET /api/user` (resolving an email in `/admin`), user search (the `/admin` roster), **and for RefundBot:** Entity Grant create/delete/search (`/api/entity/{id}/grant`, `/api/entity/grant/search`), Token Exchange Audit Log read (`/api/system/token-exchange-audit-log/search` and `/chain`), and `GET /api/system/version` + `GET /api/reactor` for the mode probe |
+| `FUSIONAUTH_API_KEY` | Server-side calls: two-factor (the customer's confirmation: `/api/two-factor/status`, `/start`, `/send`, `/login`, and `POST /api/user/two-factor/{userId}` to enroll email MFA for a customer who has none), `GET /api/user` (resolving an email in `/admin`), user search (the `/admin` roster), **and for RefundBot:** Entity Grant create/delete/search (`/api/entity/{id}/grant`, `/api/entity/grant/search`), Token Exchange Audit Log read (`/api/system/token-exchange-audit-log/search` and `/chain`), and `GET /api/system/version` + `GET /api/reactor` for the mode probe |
 | `FUSIONAUTH_ORCHESTRATOR_ENTITY_ID` / `_SECRET` | The orchestrator's token-exchange-client identity ("RefundBot Orchestrator", **Act as token exchange client** on). Leave its Client Id at the default (= Entity Id) — the same value is the exchanger `client_id` and the Entity Id the Grant and audit-log APIs take |
 | `FUSIONAUTH_ORDER_HISTORY_ENTITY_ID` | Audience for hop 1 (`order-history-service`) |
 | `FUSIONAUTH_SCORING_ENTITY_ID` | Audience for hop 2 (`customer-scoring-service`) |
@@ -207,7 +207,9 @@ Copy `.env.local.example` to `.env.local` and fill it in.
 | `PERMIFY_TOKEN` | Preshared auth key — must match the server's `PERMIFY_AUTHN_PRESHARED_KEYS` |
 | `PERMIFY_TIMEOUT_MS` | *(optional)* how long a Permify call may take before falling back. Default `2500`. After a failure the app answers from the fallback for 30s, then tries again |
 | `INFUSIONAGENT_SEED_DEMO` | *(optional)* `false` stops seeding *people* (an employee's first store/region relation, a new customer's household `delegate`). Default `true` |
+| `CONNECTOR_RESOURCE_URL` | *(optional)* the customer-facing connector's resource URL, exactly as added to the CIMD Domains' Authorized resource URIs. Default `$APP_BASE_URL/mcp` |
 | `MCP_CALL_TIMEOUT_MS` | *(optional)* ceiling for a round trip to the app's own MCP server, handshake included. Default `30000` |
+| `MAILPIT_URL` | *(optional)* base URL of the private Mailpit service behind `/mail`, e.g. `http://${{mailpit.RAILWAY_PRIVATE_DOMAIN}}:8025`. Unset → `/mail` shows a banner |
 
 ---
 
@@ -245,11 +247,13 @@ Copy `.env.local.example` to `.env.local` and fill it in.
    `FUSIONAUTH_MCP_SCOPE=target-entity:<entityId>:tool_execution`. Skip this
    whole step to run without the identity card — it degrades to an honest "not
    connected" state.
-5. Enable a two-factor method and a step-up policy on the tenant, same as
-   InFusion Bank / Works. It backs the customer's out-of-band refund confirmation.
+5. **Tenants → Multi-Factor:** enable the **Email** method (the Tenant needs working
+   SMTP), plus Authenticator / SMS if you like. The Tenant's *login* policy can stay
+   `Disabled`: the refund confirmation is a step-up, and the MFA Requirement lambda
+   (see [FusionAuth lambdas](#fusionauth-lambdas)) always challenges it.
 6. Create an **API key** scoped to the two-factor endpoints
-   (`/api/two-factor/status`, `/start`, `/send`, `/login`), `GET /api/user`, and user
-   search, and put it in `FUSIONAUTH_API_KEY`. `GET /api/user` resolves an email to a
+   (`/api/two-factor/status`, `/start`, `/send`, `/login`, `POST /api/user/two-factor`),
+   `GET /api/user`, and user search, and put it in `FUSIONAUTH_API_KEY`. `GET /api/user` resolves an email to a
    user id when you grant a Permify relation in `/admin`.
 7. **Run Permify** (see *Quick start*). Nothing to configure in FusionAuth — FGA by
    Permify is a separate service. The app loads the schema itself; to load it by hand:
@@ -269,9 +273,11 @@ Copy `.env.local.example` to `.env.local` and fill it in.
 1. **Enable Token Exchange on the Tenant.** First confirm the instance is `1.70.0` or
    newer (**System → About**) — Enterprise licensing alone isn't enough on an older
    version. Then **Tenants → edit → OAuth → Token exchange settings**: turn it on, set
-   the **policy engine to Entity** (not Lambda — the model here is "does the right Grant
-   exist right now", which is exactly what the Entity engine checks, and its audience
-   narrowing is all we need), leave **Max act claim depth** at `2` (every hop exchanges
+   the **policy engine to Lambda** with the RefundBot policy lambda (installed by
+   `scripts/install-fusionauth-lambdas.mjs`; see [FusionAuth lambdas](#fusionauth-lambdas)).
+   The lambda still asks "does the right Grant exist right now", which is what the
+   Entity engine checks, and adds rules that Grants alone can't express. `Entity` still works
+   as a fallback (`ROLLBACK=1`). Leave **Max act claim depth** at `2` (every hop exchanges
    the customer's *original* token, so the chain never nests past depth 1), and turn on
    **Enable debug logging** so a refused exchange's full reason lands in the Event Log.
 2. **Entities → Add** "RefundBot Orchestrator" with **Act as token exchange client**
@@ -282,7 +288,7 @@ Copy `.env.local.example` to `.env.local` and fill it in.
    `refund-budget-service`, and `banking-api`. Their client Ids are the `audience`
    values — put them in the four `FUSIONAUTH_*_ENTITY_ID` vars.
 4. **Entity Grants:** on each of the first three service Entities, add a Grant to the
-   orchestrator (permissions don't matter — the Entity engine only checks the Grant
+   orchestrator (permissions don't matter — the policy lambda only checks the Grant
    exists). **Do not** add one on `banking-api`. The app creates and deletes that one at
    runtime, and `/admin` shows red if it ever finds one outside a hop-4 window.
 5. *(Optional, recommended)* **The `approved_by` claim.** **Customizations → Lambdas →
@@ -313,9 +319,10 @@ Copy `.env.local.example` to `.env.local` and fill it in.
    incognito window) — the session is one cookie. If you prefer Market's two-Application
    convention, register customers on a separate Application; the app itself doesn't
    require it.
-7. **The customer's out-of-band confirmation** uses the same two-factor step-up policy
-   as before. A customer with MFA enrolled gets a code; one without gets an explicit
-   confirm, and the trace says which happened rather than implying MFA.
+7. **The customer's out-of-band confirmation** is a FusionAuth step-up that always
+   asks for a code. A customer with MFA enrolled gets a normal challenge. A customer
+   without MFA gets a code emailed to their account address. Entering it confirms the
+   refund and enrolls email MFA. The trace records which of the two happened.
 8. **API key** — add the Entity Grant, Token Exchange Audit Log, system version, and
    reactor permissions listed in the env table.
 
@@ -326,7 +333,180 @@ reachable, the version predates `1.70.0`, or the instance is unlicensed. An inst
 that's licensed but has Token Exchange off stays "live", and the first exchange's
 verbatim refusal (`TENANT_DISALLOWED`-style) tells you exactly what to fix.
 
----
+## FusionAuth lambdas
+
+RefundBot uses three Tenant-level lambdas. The source lives in `fusionauth/lambdas/`.
+`scripts/install-fusionauth-lambdas.mjs` installs and assigns the two newer ones; the
+populate lambda is set up by hand (step 5 above).
+
+| Lambda | Type | Tenant setting | Runs when | Decides |
+|---|---|---|---|---|
+| `refund-step-up-requirement.js` | MFA Requirement | `lambdaConfiguration.multiFactorRequirementId` | `/api/two-factor/status` with `action: stepUp` | Whether the customer must enter a code |
+| `refund-token-exchange-policy.js` | Token Exchange Policy | `tokenExchangeConfiguration.policyEngine = LAMBDA`, `policyEngineLambdaId` | Every token exchange on the Tenant | Whether FusionAuth issues the token, plus its audience and lifetime |
+| *approved_by populate* (step 5) | Token Exchange Populate | `tokenExchangeConfiguration.populateLambdaId` | After the policy lambda allows an exchange | Extra claims (`approved_by`) on the issued token |
+
+### Where they sit in a refund
+
+```
+customer confirms ──► /api/two-factor/status ──► [MFA Requirement]  always "required"
+                       └─ no method enrolled? app emails a code → verify + enroll email MFA
+hop N exchange ──► POST /oauth2/token/<tenantId> (token-exchange grant)
+                    ├─ FusionAuth: authenticate orchestrator, validate subject token
+                    ├─ [Token Exchange Policy]  ALLOW / DENY  (Grant check lives here)
+                    └─ [Populate]               stamp approved_by (hop 4)
+```
+
+### MFA Requirement — `refund-step-up-requirement.js`
+
+When `context.action === 'stepUp'` and `eventInfo.data.action` starts with
+`refund:confirm:`, it sets `result.required = true`. Any other step-up keeps FusionAuth's
+own decision.
+
+FusionAuth already challenges step-ups by default, so the lambda doesn't change today's
+behavior. It makes the rule explicit, so a later change to MFA trust or policy can't
+quietly turn a refund confirmation into a single click.
+
+The bug that made step-up look broken was in the app, not FusionAuth. FusionAuth asked
+for a challenge, but the customer had no enrolled method, and the app then confirmed
+anyway. Now the app answers "no method" with an emailed enrollment code
+(`/api/two-factor/status` returns `enroll: true`; `/api/two-factor/verify` calls the
+Enable MFA API). There is no way to confirm without a code.
+
+### Token Exchange Policy — `refund-token-exchange-policy.js`
+
+On the `LAMBDA` engine, FusionAuth asks this lambda about every exchange instead of
+checking Entity Grants itself. The lambda checks, in order, and a failure becomes a 403
+with `error_reason: lambda_denied`:
+
+| # | Rule | Denial `error` | Why |
+|---|---|---|---|
+| 1 | `exchange.clientId` is the orchestrator Entity | `unauthorized_client` | Only RefundBot's orchestrator acts on customers' behalf |
+| 2 | Exactly one requested audience, and it is one of the four service Entities | `invalid_target` | One token per service, so it can't be replayed elsewhere |
+| 3 | `subjectTokenValidationStatus === 'AUTHORITATIVE'`, and the subject has no `act` claim | `invalid_request` | Every hop exchanges the customer's *original* token, never a previous hop's |
+| 4 | The subject token's `aud` includes a front door: the web Application's client id or the `/mcp` connector URL | `unauthorized_client` | Only customer tokens from RefundBot's own entry points can start a chain |
+| 5 | `GET /api/entity/grant/search?entityId=<service>&recipientEntityId=<orchestrator>` finds a Grant | `unauthorized_client` | Keeps the Entity engine's rule, so the on-demand banking-api Grant still gates hop 4 |
+
+If all five pass, it returns `ALLOW` with `aud: [service]`, `scope: []`, and
+`expires_in` of **60s for banking-api** and 300s for the other three services. FusionAuth
+caps that at the Tenant or Entity Type JWT lifetime.
+
+The denial text says which rule failed, for example `RefundBot policy: no Entity Grant
+from the orchestrator to banking-api exists right now.` The app records it in the trace
+verbatim.
+
+**Grant lookup credentials.** Rule 5 calls FusionAuth's own API from inside the lambda
+(Lambda HTTP Connect). It authenticates with the lambda secret `refundbot-grant-reader`
+(Settings → Key Master), which holds an API key that is:
+
+- locked to the RefundBot Tenant;
+- limited to `GET /api/entity/grant/search`.
+
+If the secret is missing or the lookup fails, the lambda **denies**. It never allows by
+default.
+
+**The lambda's IDs are baked in at install time.** The installer fills in
+`__ORCHESTRATOR_ID__`, the four service ids, `__APP_CLIENT_ID__`,
+`__CONNECTOR_RESOURCE_URL__`, and `__FUSIONAUTH_URL__` from the environment. If you change
+an Entity, the Application, or the connector URL, re-run the installer. Don't edit the
+lambda in the Admin UI.
+
+### Installing
+
+```bash
+# first run: creates both lambdas, the grant-reader key + secret, assigns everything
+GRANT_READER_API_KEY=<key> APP_PUBLIC_URL=https://refundbot.fusionauth.co \
+  node --env-file=.env.local scripts/install-fusionauth-lambdas.mjs
+
+# after editing a lambda file: same command (re-running updates in place; the secret is kept)
+
+# back to the Entity engine (lambdas stay installed)
+ROLLBACK=1 node --env-file=.env.local scripts/install-fusionauth-lambdas.mjs
+```
+
+- `GRANT_READER_API_KEY` is only needed when `FUSIONAUTH_API_KEY` can't create API keys
+  (it needs `/api/api-key`). In that case, create the key in **Settings → API Keys**:
+  Tenant RefundBot, endpoint `GET /api/entity/grant/search` only.
+- `APP_PUBLIC_URL` sets the connector URL baked into rule 4. It defaults to `APP_BASE_URL`,
+  which is `localhost` in `.env.local`.
+- The installer uses fixed ids (`7e3f2a10-…-0c0f5e6d2b11` for the MFA lambda, `…b12` for
+  the policy lambda, `…b14` for the secret), so re-running updates in place instead of
+  creating duplicates.
+
+### Debugging
+
+- **Lambda errors and `console.*` output:** System → Event Log. Debug is on for both lambdas.
+- **Why an exchange was refused:** Tenant → OAuth → Token exchange → **Enable debug
+  logging** (on). Also see System → Token Exchange Log, or `/admin` → Token Exchange audit
+  in the app. Each attempt there shows its outcome (`SUCCESS`, `POLICY_DENIED`,
+  `POLICY_LAMBDA_ERROR`, `SUBJECT_TOKEN_INVALID`, …).
+- **A `400 invalid_request` with no description** is a lambda exception. The Event Log
+  has the stack trace.
+
+## ChatGPT / claude.ai connector (CIMD)
+
+`/mcp` is RefundBot as a headless, customer-facing Streamable HTTP MCP server. Its tools
+are `list_my_orders`, `request_refund`, `get_refund_status`, and `refund_policy`.
+
+- **It's the orchestrator's front door, not the backend.** `/api/mcp` still serves only
+  exchanged tokens.
+- **The token is the customer's own.** The chat app's token becomes every hop's
+  `subject_token`, which is why the policy lambda's rule 4 accepts the connector URL as an
+  audience.
+- **There is no confirm tool.** `request_refund` returns a `confirmUrl`
+  (`/refund/confirm/<id>`), where the customer does the step-up in their browser.
+
+### FusionAuth configuration
+
+| Object | Setting | Value (refundbot.fusionauth.co) |
+|---|---|---|
+| Tenant → General | **Issuer** | `https://demo.fusionauth.io/<tenantId>`. CIMD clients look up discovery at `/.well-known/openid-configuration/<tenantId>`. This changes `iss` on every token; the app reads the issuer from discovery, so restart it after changing |
+| CIMD Domain "RefundBot — ChatGPT" | Domain | `https://chatgpt.com` |
+| CIMD Domain "RefundBot — Claude" | Domain | `https://claude.ai` |
+| Both CIMD Domains | Authorized resource URIs | `https://refundbot.fusionauth.co/mcp`, exactly (no trailing slash) |
+| Both CIMD Domains | Consent mode | `RememberDecision` |
+| Both CIMD Domains | Provided scopes | `email`, `profile` on; `phone`, `address` off. `openid` / `offline_access` are always available |
+| Both CIMD Domains | Debug | on. Failed registrations and code exchanges go to the Event Log |
+
+CIMD Domains need **Enterprise, 1.70.0+**. Check that
+`/.well-known/openid-configuration/<tenantId>` reports
+`client_id_metadata_document_supported: true`.
+
+### App configuration
+
+- `/.well-known/oauth-protected-resource/mcp` advertises:
+  - `resource` = `CONNECTOR_RESOURCE_URL`, default `$APP_BASE_URL/mcp`;
+  - `authorization_servers` = the Tenant issuer.
+- `lib/connector-auth.ts` accepts a token only when all of these hold:
+  - FusionAuth signed it;
+  - its `aud` includes the connector URL (CIMD tokens carry `[<client_id URL>, <resource>]`);
+  - it has no `act`.
+
+### Connecting
+
+- **ChatGPT:** Settings → Apps & Connectors → Create. Enter URL
+  `https://refundbot.fusionauth.co/mcp` and choose authentication **OAuth**.
+- **claude.ai:** Settings → Connectors → Add custom connector. Enter the same URL and
+  leave the client id/secret empty.
+
+The approval records are in memory, so the connector must run in the same process as the
+web app and the support console.
+
+### End-to-end flow from ChatGPT
+
+1. `request_refund`:
+   - FGA ownership check;
+   - hops 1–3, each exchange passing the policy lambda;
+   - the hop-4 probe, which the policy lambda **denies** (no banking-api Grant).
+2. ChatGPT shows `confirmUrl`. The customer opens it, signs in to the web app, and enters
+   the step-up code. The MFA Requirement lambda is always in force here.
+3. If the order is above the floor, an employee approves in `/support/approvals`.
+4. Hop 4:
+   - the app creates the Grant;
+   - the policy lambda allows a 60s banking-api token;
+   - the populate lambda stamps `approved_by`;
+   - `process_refund` runs;
+   - the Grant is deleted.
+5. ChatGPT's `get_refund_status` reports `refunded` and the confirmation number.
 
 ## Deploying to Railway
 
@@ -369,6 +549,27 @@ answers — no restart needed.
 
 The orchestrator talks to its own MCP server over loopback (`127.0.0.1:$PORT`), not
 back through Railway's public edge — same checks, one fewer network hop.
+
+**Demo inbox (Mailpit) on Railway** — the demo accounts are shared, so nobody can enroll
+their own phone or authenticator, and the account addresses aren't real inboxes. Point
+FusionAuth's SMTP at Mailpit and every MFA email lands at `/mail`, readable by any
+signed-in user.
+
+1. Add a service from the image `axllent/mailpit` with **no public domain** for its UI.
+   Variables: `MP_WEBROOT=/mail`, `MP_MAX_MESSAGES=500`, `MP_SMTP_AUTH=demo:<secret>`,
+   `MP_SMTP_AUTH_ALLOW_INSECURE=true`. Optionally attach a volume at `/data` and set
+   `MP_DATABASE=/data/mailpit.db` so mail survives a restart.
+2. FusionAuth has to reach port `1025`. If FusionAuth runs in the same Railway project,
+   use `mailpit.railway.internal:1025`. Otherwise (e.g. FusionAuth Cloud) add a **TCP
+   Proxy** on port `1025` (*Settings → Networking*) and use the `host:port` it gives you —
+   the SMTP auth from step 1 is what keeps that port from being an open relay target.
+3. **FusionAuth → Tenants → (tenant) → Email:** host/port from step 2, security `NONE`,
+   username `demo`, password `<secret>`. Send a test email; it should appear at `/mail`.
+4. App variable: `MAILPIT_URL=http://${{mailpit.RAILWAY_PRIVATE_DOMAIN}}:8025`.
+
+`/mail` doesn't proxy Mailpit's live-update websocket — refresh to see new messages.
+Locally: `docker run -p 8025:8025 -p 1025:1025 -e MP_WEBROOT=/mail axllent/mailpit` and
+`MAILPIT_URL=http://localhost:8025`.
 
 ## Resetting the demo (no restart)
 
@@ -660,6 +861,8 @@ Customers get **standard** self-service up to **$100**; above that a specialist 
 app/
   page.tsx                          Landing — Brightline help center; customer / support sign-in
   refund/page.tsx                   RefundBot — customer chat + Token chain / Architecture / Permissions
+  refund/confirm/[id]/page.tsx      Out-of-band confirmation for refunds requested from ChatGPT / Claude
+  mcp/route.ts                      Customer-facing MCP connector (ChatGPT / claude.ai via CIMD)
   support/approvals/page.tsx        Role-gated console: approve / deny (Permify cascade) + escalation notes
   admin/page.tsx                    Role-gated: Token Exchange audit vs. app trace, identities, FusionAuth FGA
   api/refund/route.ts               Customer turn: plan → Permify ownership → hops 1–3 → auto_approve → hop-4 probe
@@ -669,8 +872,9 @@ app/
   api/health/route.ts               Liveness for Railway
   api/auth/login|callback|logout/   PKCE flow (OIDC base scopes)
   api/mcp/route.ts                  The MCP server (Streamable HTTP, OAuth-protected) — the 4 refund tools
-  api/two-factor/status|verify/     The customer's out-of-band refund confirmation
-  .well-known/oauth-protected-resource/route.ts   RFC 9728 metadata
+  api/two-factor/status|verify/     The customer's out-of-band refund confirmation (challenge, or email enroll)
+  .well-known/oauth-protected-resource/route.ts       RFC 9728 metadata for /api/mcp
+  .well-known/oauth-protected-resource/mcp/route.ts   RFC 9728 metadata for the /mcp connector
   layout.tsx, globals.css
 instrumentation.ts    Boot hook: loads the Permify schema + demo graph (or logs the fallback)
 lib/
@@ -689,18 +893,26 @@ lib/
   fusionauth.ts       Human AuthN: authorize/callback/logout, JWKS verify, two-factor, CC token
   mcp-auth.ts         Independent bearer verifier — Application audience or a service audience
   mcp-server.ts       The four refund tools (exchangeGate)
+  connector-auth.ts   /mcp bearer verifier — the customer's own token, aud = connector URL, no act
+  connector-tools.ts  /mcp tools: list_my_orders, request_refund, get_refund_status, refund_policy
+  refund-replies.ts   Customer-facing wording per refund state (web chat + connector)
   agent.ts            Planner mode + MCP round-trip plumbing (deadline, base URL)
   knowledge-base.ts   Customer refund FAQ + support escalation notes
   session.ts          Encrypted cookie (JWKS-verified reads, exposes sid) + step-up grant
   bff.ts, pkce.ts, roles.ts, docs-links.ts
 components/
   RefundChat.tsx  ExchangeChainTrace.tsx  RefundArchitectureDiagram.tsx  PermissionsGraph.tsx
-  RefundConfirmationSlip.tsx  ApprovalConsole.tsx  TokenExchangeAuditPanel.tsx  DemoResetPanel.tsx
+  RefundConfirmationSlip.tsx  RefundConfirmPanel.tsx  ApprovalConsole.tsx  TokenExchangeAuditPanel.tsx  DemoResetPanel.tsx
   TokenExchangeModeBanner.tsx  FgaModeBanner.tsx  AgentModeBanner.tsx
   FgaSchemaViewer.tsx  FgaRelationshipAdmin.tsx  NonHumanIdentityCard.tsx
   Shell.tsx  TopNav.tsx  AccountLinks.tsx  DocLink.tsx  DemoDisclaimer.tsx  BrightlineMark.tsx
 permify/
   schema.perm         The FusionAuth FGA schema — account / order / store / region
+fusionauth/lambdas/
+  refund-step-up-requirement.js     MFA Requirement — refund confirmations always challenged
+  refund-token-exchange-policy.js   Token Exchange Policy — orchestrator, one audience, original token, front door, Grant
+scripts/
+  install-fusionauth-lambdas.mjs    Installs + assigns the lambdas, grant-reader secret (ROLLBACK=1 → Entity engine)
 proxy.ts
 railway.json        Railway build/deploy config (single replica)
 ```

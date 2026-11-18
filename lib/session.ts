@@ -183,14 +183,14 @@ const STEPUP_COOKIE = "ia_stepup";
 const STEPUP_TTL_SECONDS = 120;
 
 /**
- * `via` records HOW the grant was earned — a completed two-factor challenge, or
- * FusionAuth saying none was required — so RefundBot's trace can say which one backed
+ * `via` records HOW the grant was earned — a completed two-factor challenge, a code
+ * emailed to enroll the customer's first MFA method, or FusionAuth saying none was
+ * required — so RefundBot's trace can say which one backed
  * the customer's confirmation instead of implying MFA that never happened.
  */
-export async function setStepUpGrant(
-  action: string,
-  via: "challenge" | "not_required" | "no_method" = "challenge"
-) {
+export type StepUpVia = "challenge" | "enrolled" | "not_required";
+
+export async function setStepUpGrant(action: string, via: StepUpVia = "challenge") {
   const jwe = await new EncryptJWT({ action, via })
     .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
     .setIssuedAt()
@@ -229,7 +229,7 @@ export async function consumeStepUpGrant(action: string): Promise<boolean> {
  */
 export async function consumeStepUpGrantDetail(
   action: string
-): Promise<{ ok: boolean; via?: "challenge" | "not_required" | "no_method" }> {
+): Promise<{ ok: boolean; via?: StepUpVia }> {
   const store = await cookies();
   const raw = store.get(STEPUP_COOKIE)?.value;
   if (!raw) return { ok: false };
@@ -240,7 +240,7 @@ export async function consumeStepUpGrantDetail(
     return {
       ok: true,
       via:
-        payload.via === "not_required" || payload.via === "no_method"
+        payload.via === "not_required" || payload.via === "enrolled"
           ? payload.via
           : "challenge",
     };

@@ -35,6 +35,8 @@ interface Slip {
   requestId: string;
   title: string;
   phase: "confirm" | "code";
+  /** No MFA method yet: the code was emailed to enroll one (see /api/two-factor/status). */
+  enroll?: boolean;
   twoFactorId?: string;
   methods: StepUpMethod[];
   error?: string;
@@ -332,6 +334,7 @@ export default function RefundChat({
         challengeRequired?: boolean;
         twoFactorId?: string;
         methods?: StepUpMethod[];
+        enroll?: boolean;
         error?: string;
       };
       if (!res.ok) return setSlip({ ...slip, error: d.error ?? "Couldn't start the confirmation." });
@@ -342,7 +345,7 @@ export default function RefundChat({
         await decide(id, "confirm");
         return;
       }
-      setSlip({ ...slip, phase: "code", twoFactorId: d.twoFactorId, methods: d.methods ?? [], error: undefined });
+      setSlip({ ...slip, phase: "code", twoFactorId: d.twoFactorId, enroll: d.enroll, methods: d.methods ?? [], error: undefined });
     } catch {
       setSlip({ ...slip, error: "Couldn't reach the confirmation service." });
     } finally {
@@ -357,7 +360,7 @@ export default function RefundChat({
       const res = await fetch("/api/two-factor/verify", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ twoFactorId: slip.twoFactorId, code, action: refundConfirmAction(slip.requestId) }),
+        body: JSON.stringify({ twoFactorId: slip.twoFactorId, enroll: slip.enroll, code, action: refundConfirmAction(slip.requestId) }),
       });
       const d = (await res.json()) as { verified?: boolean; error?: string };
       if (!res.ok || !d.verified) return setSlip({ ...slip, error: d.error ?? "Incorrect code. Try again." });

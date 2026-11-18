@@ -53,6 +53,12 @@ FGA invariants:
 
 Other invariants:
 
+- `/mcp` (`lib/connector-auth.ts`, `lib/connector-tools.ts`) is the customer-facing
+  connector for ChatGPT / claude.ai (CIMD clients). It accepts only the customer's own
+  token (aud includes the connector URL, no `act`), drives the same `startRefund`, and
+  never confirms a refund itself — it returns a `/refund/confirm/<id>` link. Don't add a
+  confirm tool, and don't loosen `/api/mcp`'s `exchangeGate` to serve chat apps.
+
 - Logins request only OIDC base scopes (`lib/bff.ts`). There is no custom scope catalog;
   don't add one — an authorize request naming an undefined scope fails every login.
 - Optional services degrade with a visible banner, never a throw: FusionAuth Entity,
@@ -76,6 +82,12 @@ RFC 8693 Token Exchange invariants:
 - The four refund MCP tools authorize with `exchangeGate` (exchanged token + own audience
   + `act.sub` = orchestrator). `process_refund` must keep its own approval-record check —
   `approved_by` on the token is cross-checked against the record, never trusted alone.
+- With the Tenant on the `LAMBDA` policy engine (`fusionauth/lambdas/refund-token-exchange-policy.js`),
+  the lambda IS the Grant check: it must keep looking up the orchestrator → service
+  Entity Grant, or the on-demand banking-api Grant stops gating hop 4. Change the lambda
+  file and re-run `scripts/install-fusionauth-lambdas.mjs`; don't edit it in the Admin UI.
+- A refund confirmation always takes a code. A customer with no MFA method gets one
+  emailed to enroll (`/api/two-factor/*` with `enroll`); don't restore a no-method bypass.
 - Token-exchange refusals go into the trace verbatim (`describeFailure`). Don't
   paraphrase or swallow them.
 - `RefundRecord.subjectToken` never leaves the server: browsers get `toView(record)`.
