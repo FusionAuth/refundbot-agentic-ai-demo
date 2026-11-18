@@ -102,10 +102,18 @@ export async function verifyMcpToken(
     ]);
     const { payload } = await jwtVerify(bearerToken, keys, {
       issuer,
-      audience: [expectedAudience(), ...allServiceAudiences()],
+      audience: [
+        expectedAudience(),
+        ...allServiceAudiences(),
+        process.env.FUSIONAUTH_MCP_ENTITY_ID,
+      ].filter((a): a is string => typeof a === "string" && a !== ""),
     });
     claims = payload as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    console.log(
+      "[mcp-auth] rejected:",
+      err instanceof Error ? err.message : String(err)
+    );
     claims = undefined;
   }
 
