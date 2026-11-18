@@ -187,7 +187,7 @@ Copy `.env.local.example` to `.env.local` and fill it in.
 | `FUSIONAUTH_CLIENT_ID` / `_SECRET` | The main Application — the user login app (customers and employees) and the JWT `aud` |
 | `FUSIONAUTH_MCP_CLIENT_ID` / `_SECRET` | The tool server's own non-human identity — the **Client Id / secret of a FusionAuth Entity** (client_credentials in FusionAuth is Entity Management, a paid feature — *not* an Application grant). Optional; leave unset to run without the identity card |
 | `FUSIONAUTH_MCP_SCOPE` | *(optional)* The Entity token's scope, `target-entity:<entityId>:<permission>`. Required for the client_credentials grant to succeed |
-| `FUSIONAUTH_API_KEY` | Server-side calls: two-factor (the customer's confirmation: `/api/two-factor/status`, `/start`, `/send`, `/login`, and `POST /api/user/two-factor/{userId}` to enroll email MFA for a customer who has none), `GET /api/user` (resolving an email in `/admin`), user search (the `/admin` roster), **and for RefundBot:** Entity Grant create/delete/search (`/api/entity/{id}/grant`, `/api/entity/grant/search`), Token Exchange Audit Log read (`/api/system/token-exchange-audit-log/search` and `/chain`), and `GET /api/system/version` + `GET /api/reactor` for the mode probe |
+| `FUSIONAUTH_API_KEY` | Server-side calls: two-factor (the customer's confirmation: `/api/two-factor/status`, `/start`, `/send`, `/login`, and `POST /api/user/two-factor/{userId}` to enroll email MFA for a customer who has none), `GET /api/user` (resolving an email in `/admin`), user search (the `/admin` roster), **and for RefundBot:** Entity Grant create/delete/retrieve (`/api/entity/{id}/grant`), Token Exchange Audit Log read (`/api/system/token-exchange-audit-log/search` and `/chain`), and `GET /api/system/version` + `GET /api/reactor` for the mode probe |
 | `FUSIONAUTH_ORCHESTRATOR_ENTITY_ID` / `_SECRET` | The orchestrator's token-exchange-client identity ("RefundBot Orchestrator", **Act as token exchange client** on). Leave its Client Id at the default (= Entity Id) — the same value is the exchanger `client_id` and the Entity Id the Grant and audit-log APIs take |
 | `FUSIONAUTH_ORDER_HISTORY_ENTITY_ID` | Audience for hop 1 (`order-history-service`) |
 | `FUSIONAUTH_SCORING_ENTITY_ID` | Audience for hop 2 (`customer-scoring-service`) |
@@ -384,7 +384,7 @@ with `error_reason: lambda_denied`:
 | 2 | Exactly one requested audience, and it is one of the four service Entities | `invalid_target` | One token per service, so it can't be replayed elsewhere |
 | 3 | `subjectTokenValidationStatus === 'AUTHORITATIVE'`, and the subject has no `act` claim | `invalid_request` | Every hop exchanges the customer's *original* token, never a previous hop's |
 | 4 | The subject token's `aud` includes a front door: the web Application's client id or the `/mcp` connector URL | `unauthorized_client` | Only customer tokens from RefundBot's own entry points can start a chain |
-| 5 | `GET /api/entity/grant/search?entityId=<service>&recipientEntityId=<orchestrator>` finds a Grant | `unauthorized_client` | Keeps the Entity engine's rule, so the on-demand banking-api Grant still gates hop 4 |
+| 5 | `GET /api/entity/<service>/grant?recipientEntityId=<orchestrator>` returns 200 (404 = no Grant) | `unauthorized_client` | Keeps the Entity engine's rule, so the on-demand banking-api Grant still gates hop 4 |
 
 If all five pass, it returns `ALLOW` with `aud: [service]`, `scope: []`, and
 `expires_in` of **60s for banking-api** and 300s for the other three services. FusionAuth
@@ -399,7 +399,10 @@ verbatim.
 (Settings → Key Master), which holds an API key that is:
 
 - locked to the RefundBot Tenant;
-- limited to `GET /api/entity/grant/search`.
+- limited to `GET` on the **`/api/entity/grant`** endpoint permission, which covers
+  `GET /api/entity/{id}/grant`. Don't use `/api/entity`: that permission doesn't cover
+  Grants (the lookup gets a 401) and it can read Entity client secrets. Don't use
+  `/api/entity/grant/search` either: it doesn't return Entity-to-Entity Grants at all.
 
 If the secret is missing or the lookup fails, the lambda **denies**. It never allows by
 default.
@@ -425,7 +428,7 @@ ROLLBACK=1 node --env-file=.env.local scripts/install-fusionauth-lambdas.mjs
 
 - `GRANT_READER_API_KEY` is only needed when `FUSIONAUTH_API_KEY` can't create API keys
   (it needs `/api/api-key`). In that case, create the key in **Settings → API Keys**:
-  Tenant RefundBot, endpoint `GET /api/entity/grant/search` only.
+  Tenant RefundBot, endpoint `/api/entity/grant` with `GET` only.
 - `APP_PUBLIC_URL` sets the connector URL baked into rule 4. It defaults to `APP_BASE_URL`,
   which is `localhost` in `.env.local`.
 - The installer uses fixed ids (`7e3f2a10-…-0c0f5e6d2b11` for the MFA lambda, `…b12` for

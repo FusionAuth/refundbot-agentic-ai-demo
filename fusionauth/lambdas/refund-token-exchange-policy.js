@@ -68,22 +68,30 @@ function policy(result, exchange, context) {
     return deny(result, 'invalid_request',
       'RefundBot policy: the refundbot-grant-reader secret is missing, so the Entity Grant cannot be checked.');
   }
-  var response = fetch(FUSIONAUTH_URL + '/api/entity/grant/search?entityId=' +
-    encodeURIComponent(target) + '&recipientEntityId=' + encodeURIComponent(ORCHESTRATOR), {
+  // GET /api/entity/{service}/grant?recipientEntityId={orchestrator}: 200 = the Grant
+  // exists, 404 = it doesn't. (The Grant *search* API doesn't return Entity-to-Entity
+  // Grants, so it can't answer this.)
+  // FusionAuth's own local HTTP port first (the request never leaves the server, as in the
+  // Lambda HTTP Connect docs); the public URL only if that port isn't reachable (-1).
+  var path = '/api/entity/' + encodeURIComponent(target) +
+    '/grant?recipientEntityId=' + encodeURIComponent(ORCHESTRATOR);
+  var init = {
     method: 'GET',
     headers: { 'Authorization': apiKey, 'X-FusionAuth-TenantId': context.tenantId }
-  });
+  };
+  var response = fetch('http://localhost:9012' + path, init);
+  if (response.status === -1) {
+    response = fetch(FUSIONAUTH_URL + path, init);
+  }
+  if (response.status === 404) {
+    return deny(result, 'unauthorized_client',
+      'RefundBot policy: no Entity Grant from the orchestrator to ' + service.name + ' exists right now.');
+  }
   if (response.status !== 200) {
-    console.error('Entity Grant search returned status ' + response.status + '.');
+    console.error('Entity Grant lookup returned status ' + response.status + '.');
     return deny(result, 'invalid_request',
       'RefundBot policy: could not check the Entity Grant for ' + service.name +
       ' (status ' + response.status + ').');
-  }
-  var body = JSON.parse(response.body || '{}');
-  var grants = body.grants || [];
-  if (grants.length === 0) {
-    return deny(result, 'unauthorized_client',
-      'RefundBot policy: no Entity Grant from the orchestrator to ' + service.name + ' exists right now.');
   }
 
   result.decision = 'ALLOW';

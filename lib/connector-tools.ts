@@ -56,6 +56,18 @@ export function confirmUrl(requestId: string): string {
   return `${appBaseUrl()}/refund/confirm/${requestId}`;
 }
 
+function firstRefusal(view: RefundRequestView): string | null {
+  for (const e of view.trace) {
+    if (e.type === "hop" && e.exchange === "denied" && e.grantKind !== "probe") {
+      return `hop ${e.hop} (${e.service}): ${e.reason ?? "refused"}`;
+    }
+    if (e.type === "hop" && e.mcp && (e.mcp.status === "denied" || e.mcp.status === "error")) {
+      return `hop ${e.hop} (${e.service}) tool call: ${e.mcp.detail}`;
+    }
+  }
+  return null;
+}
+
 function summarize(view: RefundRequestView) {
   const awaitingCustomer =
     view.decision === "awaiting_approvals" && view.customer.state === "pending";
@@ -69,6 +81,10 @@ function summarize(view: RefundRequestView) {
     employeeReview: view.employee.state,
     confirmationId: view.confirmationId ?? null,
     message: replyFor(view),
+    // When the chain stopped on a refusal, FusionAuth's own words (never paraphrased).
+    ...(view.decision === "failed" || view.decision === "stopped"
+      ? { failure: firstRefusal(view) }
+      : {}),
     ...(awaitingCustomer
       ? {
           confirmUrl: confirmUrl(view.id),

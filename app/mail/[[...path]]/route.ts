@@ -21,6 +21,9 @@ const DROP_REQUEST_HEADERS = new Set([
   "connection",
   "content-length",
   "accept-encoding",
+  // Mailpit rejects requests whose Origin doesn't match its own (private) host.
+  "origin",
+  "referer",
 ]);
 const DROP_RESPONSE_HEADERS = new Set([
   "content-encoding",

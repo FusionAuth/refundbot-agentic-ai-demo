@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
           { status: 409 }
         );
       }
-      await sendEmailEnrollmentCode({ email: session.email });
+      await sendEmailEnrollmentCode({ userId: session.userId, email: session.email });
       return NextResponse.json({
         challengeRequired: true,
         enroll: true,
@@ -76,7 +76,12 @@ export async function POST(request: NextRequest) {
       twoFactorId: challenge.twoFactorId,
       methods: challenge.methods,
     });
-  } catch {
+  } catch (err) {
+    const detail = err as { statusCode?: number; exception?: unknown };
+    console.error(
+      `[two-factor] step-up for ${action} failed (${detail?.statusCode ?? "no status"}):`,
+      JSON.stringify(detail?.exception ?? String(err))
+    );
     return NextResponse.json(
       { error: "Could not start a step-up challenge." },
       { status: 502 }

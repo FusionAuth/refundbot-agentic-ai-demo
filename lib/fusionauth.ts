@@ -374,8 +374,16 @@ export async function startTwoFactorChallenge(opts: {
  * code to the address on the account instead; entering it both proves possession of the
  * inbox (the step-up) and enrolls email as their first method (enableEmailTwoFactor).
  */
-export async function sendEmailEnrollmentCode(opts: { email: string }): Promise<void> {
-  await faClient().sendTwoFactorCodeForEnableDisable({ email: opts.email, method: "email" });
+export async function sendEmailEnrollmentCode(opts: {
+  userId: string;
+  email: string;
+}): Promise<void> {
+  // With API-key auth FusionAuth needs the userId (400 [missing]userId without it).
+  await faClient().sendTwoFactorCodeForEnableDisable({
+    userId: opts.userId,
+    email: opts.email,
+    method: "email",
+  });
 }
 
 /** Enables email MFA with the code from sendEmailEnrollmentCode. 421 = bad code. */

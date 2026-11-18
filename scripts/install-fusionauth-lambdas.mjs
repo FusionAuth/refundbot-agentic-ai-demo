@@ -3,7 +3,7 @@
 //   node --env-file=.env.local scripts/install-fusionauth-lambdas.mjs
 //
 //   1. MFA Requirement lambda  → tenant.lambdaConfiguration.multiFactorRequirementId
-//   2. A narrow API key (GET /api/entity/grant/search only, Tenant-locked), stored as the
+//   2. A narrow API key (GET /api/entity/grant only, Tenant-locked), stored as the
 //      lambda secret `refundbot-grant-reader`
 //   3. Token Exchange Policy lambda → tenant.tokenExchangeConfiguration.policyEngine = LAMBDA
 //
@@ -71,7 +71,7 @@ console.log("Tenant: MFA requirement lambda assigned");
 
 // 2. Grant-reader API key + lambda secret. Creating an API key needs a key that may call
 // /api/api-key; if ours can't, create one in the Admin UI (Settings → API Keys: Tenant
-// RefundBot, endpoint GET /api/entity/grant/search only) and pass it as GRANT_READER_API_KEY.
+// RefundBot, endpoint GET /api/entity/grant only) and pass it as GRANT_READER_API_KEY.
 const haveSecret = await call("GET", `/api/key/${IDS.secret}`, undefined, { allow404: true, global: true });
 if (!haveSecret) {
   let keyValue = process.env.GRANT_READER_API_KEY?.trim();
@@ -81,8 +81,8 @@ if (!haveSecret) {
     if (probe.status === 401) {
       console.log(
         "\nSkipping the token exchange policy: this API key can't create API keys.\n" +
-        "Create one in Settings → API Keys (Tenant: RefundBot; endpoint GET /api/entity/grant/search\n" +
-        "only), then re-run with GRANT_READER_API_KEY=<key>."
+        "Create one in Settings → API Keys (Tenant: RefundBot; endpoint GET /api/entity/grant only),\n" +
+        "then re-run with GRANT_READER_API_KEY=<key>."
       );
       process.exit(0);
     }
@@ -91,7 +91,7 @@ if (!haveSecret) {
         key: keyValue,
         tenantId: TENANT,
         metaData: { attributes: { description: "RefundBot token exchange policy lambda — reads Entity Grants only" } },
-        permissions: { endpoints: { "/api/entity/grant/search": ["GET"] } },
+        permissions: { endpoints: { "/api/entity/grant": ["GET"] } },
       },
     }, { global: true });
     console.log("created grant-reader API key");

@@ -118,19 +118,18 @@ export async function bankingGrantExists(mode: ExchangeMode): Promise<boolean | 
   if (mode === "simulated") return simulatedGrantExists(bankingEntityId());
   const cfg = apiConfig();
   if (!cfg) return null;
-  const q = new URLSearchParams({
-    entityId: bankingEntityId(),
-    recipientEntityId: orchestratorId(),
-  });
+  // Retrieve, not search: /api/entity/grant/search doesn't return Entity-to-Entity
+  // Grants, so it always answered "no". 200 = exists, 404 = doesn't.
+  const q = new URLSearchParams({ recipientEntityId: orchestratorId() });
   try {
-    const res = await fetch(`${cfg.url}/api/entity/grant/search?${q}`, {
+    const res = await fetch(`${cfg.url}/api/entity/${bankingEntityId()}/grant?${q}`, {
       headers: cfg.headers,
       cache: "no-store",
       signal: AbortSignal.timeout(8_000),
     });
+    if (res.status === 404) return false;
     if (!res.ok) return null;
-    const body = (await res.json()) as { grants?: unknown[]; total?: number };
-    return (body.total ?? body.grants?.length ?? 0) > 0;
+    return true;
   } catch {
     return null;
   }

@@ -166,6 +166,9 @@ function hopFromExchange(
     : typeof claims.aud === "string"
       ? [claims.aud]
       : undefined;
+  if (ex.failure && grantKind !== "probe") {
+    console.warn(`[token-exchange] hop ${def.hop} (${service}) refused: ${describeFailure(ex.failure)}`);
+  }
   return {
     type: "hop",
     hop: def.hop,
