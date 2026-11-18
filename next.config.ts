@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Mailpit's UI lives at "/mail/" and its relative asset URLs need the trailing slash.
+  skipTrailingSlashRedirect: true,
 };
 
 export default nextConfig;
