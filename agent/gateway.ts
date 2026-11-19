@@ -1,14 +1,29 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 /**
- * Minimal MCP client for the AgentCore gateway. One short-lived client per call:
- * open (connect), use (callTool), close (finally). The URL and bearer token come from
- * GATEWAY_URL and GATEWAY_TOKEN. No token exchange, FGA, or approval logic lives here.
+ * Minimal MCP client for the AgentCore gateway. One short-lived client per operation:
+ * open (connect), use (listTools / callTool), close (finally). The URL comes from
+ * GATEWAY_URL; the bearer token is supplied by the caller for every operation. Tool names
+ * are whatever the gateway lists (target prefix included) -- nothing is hardcoded here.
+ * No token exchange, FGA, or approval logic lives here.
  */
 
 export type GatewayResult =
   | { status: "ok"; data: unknown }
   | { status: "tool_error"; message: string; data?: unknown }
+  | { status: "not_configured"; message: string }
+  | { status: "timeout"; message: string }
+  | { status: "network_error"; message: string };
+
+export interface GatewayTool {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}
+
+export type GatewayListResult =
+  | { status: "ok"; tools: GatewayTool[] }
   | { status: "not_configured"; message: string }
   | { status: "timeout"; message: string }
   | { status: "network_error"; message: string };
@@ -79,16 +94,22 @@ const loggingFetch: typeof fetch = async (input, init) => {
   }
 };
 
-export async function callGatewayTool(
-  tool: string,
-  args: Record<string, unknown>
-): Promise<GatewayResult> {
+type Failure = Exclude<GatewayResult, { status: "ok" | "tool_error" }>;
+
+/** Open a client, run `use`, always close. Failures come back as a tagged result. */
+async function withGatewayClient<T>(
+  token: string,
+  label: string,
+  use: (client: Client, remaining: () => number) => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false; failure: Failure }> {
   const url = process.env.GATEWAY_URL?.trim();
-  const token = process.env.GATEWAY_TOKEN?.trim();
   if (!url || !token) {
     return {
-      status: "not_configured",
-      message: "GATEWAY_URL and GATEWAY_TOKEN must both be set to call the gateway.",
+      ok: false,
+      failure: {
+        status: "not_configured",
+        message: "GATEWAY_URL must be set and a bearer token supplied to call the gateway.",
+      },
     };
   }
 
@@ -102,40 +123,19 @@ export async function callGatewayTool(
 
   try {
     await withDeadline(client.connect(transport), Math.min(10_000, remaining()), "Gateway connect");
-    const res = await withDeadline(
-      client.callTool({ name: tool, arguments: args }, { timeout: remaining() }),
-      remaining(),
-      `Gateway ${tool} call`
-    );
-
-    const content = (res.content ?? []) as Array<{ type: string; text?: string }>;
-    const text = content.find((b) => b.type === "text")?.text;
-    let data: unknown = text;
-    try {
-      data = text ? JSON.parse(text) : undefined;
-    } catch {
-      // Not JSON; keep the raw text.
-    }
-
-    if (res.isError) {
-      return {
-        status: "tool_error",
-        message: typeof text === "string" && text ? text : "The gateway tool reported an error.",
-        data,
-      };
-    }
-    return { status: "ok", data };
+    return { ok: true, value: await use(client, remaining) };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    console.log(
-      `[gateway] ${tool} failed: ${err instanceof Error ? err.name : "Error"}: ${detail}`
-    );
+    console.log(`[gateway] ${label} failed: ${err instanceof Error ? err.name : "Error"}: ${detail}`);
     if (isTimeout(err)) {
-      return { status: "timeout", message: `Gateway did not respond in time: ${detail}` };
+      return { ok: false, failure: { status: "timeout", message: `Gateway did not respond in time: ${detail}` } };
     }
     return {
-      status: "network_error",
-      message: `Could not complete the gateway request (connection, auth, or protocol failure): ${detail}`,
+      ok: false,
+      failure: {
+        status: "network_error",
+        message: `Could not complete the gateway request (connection, auth, or protocol failure): ${detail}`,
+      },
     };
   } finally {
     try {
@@ -144,4 +144,63 @@ export async function callGatewayTool(
       // Closing must never mask the real result.
     }
   }
+}
+
+/** tools/list: every tool the gateway exposes to this token, with its full prefixed name. */
+export async function listGatewayTools(token: string): Promise<GatewayListResult> {
+  const out = await withGatewayClient(token, "tools/list", async (client, remaining) => {
+    const tools: GatewayTool[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const res = await withDeadline(
+        client.listTools(cursor ? { cursor } : undefined, { timeout: remaining() }),
+        remaining(),
+        "Gateway tools/list"
+      );
+      for (const t of res.tools) {
+        tools.push({
+          name: t.name,
+          description: t.description,
+          inputSchema: (t.inputSchema ?? { type: "object", properties: {} }) as Record<string, unknown>,
+          _meta: t._meta as Record<string, unknown> | undefined,
+        });
+      }
+      cursor = res.nextCursor;
+      if (!cursor) break;
+    }
+    return tools;
+  });
+  return out.ok ? { status: "ok", tools: out.value } : out.failure;
+}
+
+/** tools/call by the full prefixed name returned from listGatewayTools. */
+export async function callGatewayTool(
+  token: string,
+  name: string,
+  args: Record<string, unknown>
+): Promise<GatewayResult> {
+  const out = await withGatewayClient(token, `tools/call (${name})`, async (client, remaining) => {
+    const res = await withDeadline(
+      client.callTool({ name, arguments: args }, { timeout: remaining() }),
+      remaining(),
+      `Gateway ${name} call`
+    );
+    const content = (res.content ?? []) as Array<{ type: string; text?: string }>;
+    const text = content.find((b) => b.type === "text")?.text;
+    let data: unknown = text;
+    try {
+      data = text ? JSON.parse(text) : undefined;
+    } catch {
+      // Not JSON; keep the raw text.
+    }
+    if (res.isError) {
+      return {
+        status: "tool_error" as const,
+        message: typeof text === "string" && text ? text : "The gateway tool reported an error.",
+        data,
+      };
+    }
+    return { status: "ok" as const, data };
+  });
+  return out.ok ? out.value : out.failure;
 }
