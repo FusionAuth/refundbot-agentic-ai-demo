@@ -3,8 +3,20 @@ import { callGatewayTool } from "./gateway";
 import { planRefundTurn } from "./planner";
 
 const PORT = 8080;
+const GATEWAY_TOOL_NAME = process.env.GATEWAY_TOOL_NAME || "get_order_history";
 const GATEWAY_TARGET_PREFIX = process.env.GATEWAY_TARGET_PREFIX ?? "refundbot-mcp___";
 const MAX_BODY_BYTES = 1_000_000;
+
+/** Arguments each tool's schema accepts: orderId for two of them, none for scoring. */
+function gatewayToolArgs(tool: string, orderId: string): Record<string, unknown> {
+  switch (tool) {
+    case "get_order_history":
+    case "check_refund_budget":
+      return { orderId };
+    default:
+      return {};
+  }
+}
 
 function send(res: ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body);
@@ -55,7 +67,10 @@ const server = createServer(async (req, res) => {
     try {
       const plan = await planRefundTurn(prompt);
       if (plan.kind === "refund") {
-        const orderHistory = await callGatewayTool(`${GATEWAY_TARGET_PREFIX}get_order_history`, { orderId: plan.orderId });
+        const orderHistory = await callGatewayTool(
+          `${GATEWAY_TARGET_PREFIX}${GATEWAY_TOOL_NAME}`,
+          gatewayToolArgs(GATEWAY_TOOL_NAME, plan.orderId)
+        );
         return send(res, 200, { ...plan, orderHistory });
       }
       return send(res, 200, plan);
