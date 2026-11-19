@@ -1,0 +1,21 @@
+{
+  "name": "refundbot-gateway-interceptor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentCore Gateway request interceptor: Permify order-ownership check before get_order_history.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/index.mjs",
+    "package": "npm run build && cd dist && zip -q -j ../interceptor.zip index.mjs",
+    "test": "npm run build && node test/mock-permify.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "esbuild": "^0.25.0",
+    "typescript": "^5"
+  }
+}
