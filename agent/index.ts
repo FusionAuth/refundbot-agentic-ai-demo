@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { callGatewayTool } from "./gateway";
 import { planRefundTurn } from "./planner";
 
 const PORT = 8080;
+const GATEWAY_TARGET_PREFIX = process.env.GATEWAY_TARGET_PREFIX ?? "refundbot-mcp___";
 const MAX_BODY_BYTES = 1_000_000;
 
 function send(res: ServerResponse, status: number, body: unknown): void {
@@ -51,7 +53,12 @@ const server = createServer(async (req, res) => {
       return send(res, 400, { error: "`prompt` must be a non-empty string." });
     }
     try {
-      return send(res, 200, await planRefundTurn(prompt));
+      const plan = await planRefundTurn(prompt);
+      if (plan.kind === "refund") {
+        const orderHistory = await callGatewayTool(`${GATEWAY_TARGET_PREFIX}get_order_history`, { orderId: plan.orderId });
+        return send(res, 200, { ...plan, orderHistory });
+      }
+      return send(res, 200, plan);
     } catch (err) {
       return send(res, 500, { error: err instanceof Error ? err.message : "Planner failed." });
     }

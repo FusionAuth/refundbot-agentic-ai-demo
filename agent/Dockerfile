@@ -8,7 +8,7 @@ COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 # tsx runs the TypeScript sources directly, so there is no compile step.
-COPY index.ts planner.ts ./
+COPY index.ts planner.ts gateway.ts ./
 
 EXPOSE 8080
 
