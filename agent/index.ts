@@ -99,12 +99,20 @@ async function runAgent(
   if (listed.status !== "ok") {
     throw new UpstreamError(`Gateway tools/list failed (${listed.status}): ${listed.message}`);
   }
-  console.log(
-    `[agent] ${listed.tools.length} gateway tools: ${listed.tools.map((t) => t.name).join(", ")}`
-  );
-  const known = new Set(listed.tools.map((t) => t.name));
+  const first = listed.tools[0];
+  if (first) {
+    console.log(`[agent] first listed tool: ${first.name} _meta: ${JSON.stringify(first._meta ?? null)}`);
+  }
+  // Keep only tools whose gateway prefix (text before "___") equals their _meta.service tag.
+  const tools = listed.tools.filter((t) => {
+    const sep = t.name.indexOf("___");
+    const service = t._meta?.service;
+    return sep > 0 && typeof service === "string" && t.name.slice(0, sep) === service;
+  });
+  console.log(`[agent] ${tools.length} gateway tools kept: ${tools.map((t) => t.name).join(", ")}`);
+  const known = new Set(tools.map((t) => t.name));
   // Bedrock rejects an empty tool list, so omit toolConfig entirely when there are none.
-  const toolConfig = listed.tools.length > 0 ? toToolConfig(listed.tools) : undefined;
+  const toolConfig = tools.length > 0 ? toToolConfig(tools) : undefined;
 
   const messages: Message[] = [{ role: "user", content: [{ text: prompt }] }];
   const steps: Step[] = [];

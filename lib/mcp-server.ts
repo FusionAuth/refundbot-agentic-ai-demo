@@ -134,6 +134,7 @@ export function registerRefundTools(server: McpServer): void {
   server.registerTool(
     "get_order_history",
     {
+      _meta: { service: "order-history" },
       title: "Get order history",
       description:
         "Hop 1. Look up the order asked about (and the customer's own order count). It " +
@@ -160,6 +161,7 @@ export function registerRefundTools(server: McpServer): void {
   server.registerTool(
     "score_customer_value",
     {
+      _meta: { service: "customer-scoring" },
       title: "Score customer value",
       description:
         "Hop 2. The customer's own order history — lifetime spend, order count, prior " +
@@ -176,6 +178,7 @@ export function registerRefundTools(server: McpServer): void {
   server.registerTool(
     "check_refund_budget",
     {
+      _meta: { service: "refundbot-mcp" },
       title: "Check refund budget",
       description:
         "Hop 3. Can the refund budget cover this order, and is it above the standard " +
@@ -208,6 +211,7 @@ export function registerRefundTools(server: McpServer): void {
   server.registerTool(
     "process_refund",
     {
+      _meta: { service: "banking-api" },
       title: "Process refund",
       description:
         "Hop 4 — the irreversible one. Moves money. Requires an exchanged token for the " +

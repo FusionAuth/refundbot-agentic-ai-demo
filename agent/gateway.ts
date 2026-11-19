@@ -19,6 +19,7 @@ export interface GatewayTool {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
 }
 
 export type GatewayListResult =
@@ -161,6 +162,7 @@ export async function listGatewayTools(token: string): Promise<GatewayListResult
           name: t.name,
           description: t.description,
           inputSchema: (t.inputSchema ?? { type: "object", properties: {} }) as Record<string, unknown>,
+          _meta: t._meta as Record<string, unknown> | undefined,
         });
       }
       cursor = res.nextCursor;
