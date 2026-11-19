@@ -178,7 +178,7 @@ export function registerRefundTools(server: McpServer): void {
   server.registerTool(
     "check_refund_budget",
     {
-      _meta: { service: "refundbot-mcp" },
+      _meta: { service: "refund-budget" },
       title: "Check refund budget",
       description:
         "Hop 3. Can the refund budget cover this order, and is it above the standard " +
