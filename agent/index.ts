@@ -7,7 +7,8 @@ import {
   type Tool,
   type ToolResultContentBlock,
 } from "@aws-sdk/client-bedrock-runtime";
-import { callGatewayTool, listGatewayTools, type GatewayTool } from "./gateway";
+import { openGatewaySession, type GatewaySession, type GatewayTool } from "./gateway";
+import { START_REFUND_TOOL_NAME, startRefund, startRefundTool } from "./refund";
 
 const PORT = 8080;
 const MAX_BODY_BYTES = 1_000_000;
@@ -20,7 +21,26 @@ const MODEL_ID = process.env.BEDROCK_MODEL_ID || "anthropic.claude-sonnet-5-5";
 const SYSTEM_PROMPT =
   "You are a refund assistant. Use only the provided tools to look anything up or act. " +
   "Never invent order data; every order detail you state must come from a tool result. " +
-  "If a tool is denied or fails, say so plainly and stop — do not retry or work around it.";
+  "If a tool is denied or fails, say so plainly and stop — do not retry or work around it. " +
+  "You can start a refund with start_refund, but only after you have looked up the order " +
+  "with the other tools. When lookups are independent, request them together in a single " +
+  "turn instead of one at a time: for an order, ask for its order history, the customer " +
+  "history and the refund budget check in the same turn. Request start_refund only in a " +
+  "LATER turn, after those lookups have succeeded — never in the same turn as them. " +
+  "start_refund only STARTS the refund: the customer must still " +
+  "confirm it themselves in their browser. When start_refund succeeds and returns a " +
+  "confirmUrl, the chat shows the order, the amount and the confirm button in a confirm " +
+  "card, so reply with ONE short line: \"Your refund is ready to confirm in the chat.\" — and " +
+  "nothing else: no order details, amounts, steps, or link. Never say where the card is " +
+  "(never say above or below); call it \"the confirm card\" or \"the confirm button in the " +
+  "chat\". Do NOT print the confirmUrl or any link. If the result has no confirmUrl, the refund was not started: explain why from " +
+  "its message or failure. " +
+  "Use real line breaks; never type the characters backslash-n. You cannot confirm, " +
+  "approve, or complete a refund, so never say or imply that you did. If you need an order " +
+  "id, ask the customer for it; never suggest, guess, or give an example of a specific " +
+  "order id. Lines in the earlier conversation that start with \"[System note:\" are facts " +
+  "about what already happened. Trust them, never repeat them to the customer, and never " +
+  "start the same refund again.";
 
 const bedrock = new BedrockRuntimeClient({ region: REGION });
 
@@ -28,6 +48,121 @@ interface Step {
   tool: string;
   ok: boolean;
 }
+
+/** What the page needs to show the confirm card. Whitelisted and length-capped; no tokens. */
+interface RefundCard {
+  requestId: string;
+  orderId: string;
+  item: string | null;
+  amountCents: number | null;
+  confirmUrl: string;
+}
+
+const cap = (v: unknown, max: number): string | undefined =>
+  typeof v === "string" && v ? v.slice(0, max) : undefined;
+
+/** The card for a start_refund result — only when it came back with a usable confirmUrl. */
+function toRefundCard(data: Record<string, unknown>): RefundCard | undefined {
+  const confirmUrl = cap(data.confirmUrl, 500);
+  const requestId = cap(data.requestId, 64);
+  const orderId = cap(data.orderId, 64);
+  if (!confirmUrl || !requestId || !orderId || !/^https?:\/\//i.test(confirmUrl)) return undefined;
+  return {
+    requestId,
+    orderId,
+    item: cap(data.item, 200) ?? null,
+    amountCents:
+      typeof data.amountCents === "number" && Number.isFinite(data.amountCents)
+        ? Math.trunc(data.amountCents)
+        : null,
+    confirmUrl,
+  };
+}
+
+/**
+ * The model sometimes types a literal backslash-n (or /n) straight after a link instead of
+ * a real line break — and a browser turns that into ".../rf_1/n/n", a 404. Strip any such
+ * residue that directly follows a confirmUrl the start_refund tool actually returned, so the
+ * link in the answer is exactly that URL.
+ */
+function cleanConfirmLinks(answer: string, urls: string[]): string {
+  let out = answer;
+  for (const url of urls) {
+    const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(`${escaped}(?:\\\\[nrt]|/n)+`, "g"), url);
+  }
+  return out;
+}
+
+/** What one tool call in a turn produced. Side effects are applied after the whole batch, in order. */
+interface ToolOutcome {
+  ok: boolean;
+  content: ToolResultContentBlock;
+  /** start_refund's result data, when it succeeded. */
+  refundData?: Record<string, unknown>;
+}
+
+/** Earlier chat turns, as plain text only. Never tokens, tool results, or card data. */
+interface HistoryMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
+const MAX_HISTORY_MESSAGES = 20; // last 10 exchanges
+const MAX_HISTORY_TEXT = 2000;
+
+/** The only "[System note:" line history may carry (see the matching filter in the web route). */
+const REFUND_NOTE =
+  /^\[System note: start_refund succeeded for order [A-Za-z0-9_-]{1,64}, request [A-Za-z0-9_-]{1,64}\. The customer sees a confirm card and must confirm it in the browser\.\]$/;
+function cleanNotes(text: string, role: "user" | "assistant"): string {
+  return text
+    .split("\n")
+    .filter((line) => {
+      const l = line.trim();
+      return !l.startsWith("[System note:") || (role === "assistant" && REFUND_NOTE.test(l));
+    })
+    .join("\n");
+}
+
+/**
+ * Validate and shape the request's `history`: whitelist role + text, cap the count and each
+ * message's size, and make it a valid Converse transcript (starts with a user message, roles
+ * alternate, ends on an assistant message because the new prompt is the next user turn).
+ * Consecutive same-role messages — e.g. a user message whose reply failed — are merged.
+ */
+function toHistoryMessages(raw: unknown): Message[] {
+  const items = (Array.isArray(raw) ? raw : []).slice(-MAX_HISTORY_MESSAGES).flatMap((m) => {
+    const x = m as { role?: unknown; text?: unknown } | null;
+    const role: "user" | "assistant" | undefined =
+      x?.role === "user" || x?.role === "assistant" ? x.role : undefined;
+    const text =
+      role && typeof x?.text === "string" ? cleanNotes(x.text, role).trim().slice(0, MAX_HISTORY_TEXT) : "";
+    return role && text ? [{ role, text }] : [];
+  });
+  const merged: HistoryMessage[] = [];
+  for (const m of items) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === m.role) last.text += `\n${m.text}`;
+    else merged.push({ ...m });
+  }
+  while (merged.length && merged[0].role !== "user") merged.shift();
+  while (merged.length && merged[merged.length - 1].role !== "assistant") merged.pop();
+  return merged.map((m) => ({ role: m.role, content: [{ text: m.text }] }));
+}
+
+/**
+ * What /invocations returns. `refunds` holds a card for every refund started this request;
+ * `refund` is the most recent one, kept so a page that only reads the single field still works.
+ */
+interface AgentResult {
+  answer: string;
+  steps: Step[];
+  refund?: RefundCard;
+  refunds?: RefundCard[];
+}
+
+/** Shown instead of an error when a refund was already started but the turn can't finish. */
+const READY_TO_CONFIRM = "Your refund is ready to confirm in the chat.";
 
 /** Thrown for failures that should surface as a 502 with a clear message. */
 class UpstreamError extends Error {}
@@ -75,27 +210,68 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * Tool descriptions sometimes carry an example order id ("e.g. ORD-<number>") that the model then
+ * suggests to the customer as if it were theirs. Drop any such example from what the model
+ * sees — in the description and anywhere inside the input schema.
+ */
+function stripExampleOrderIds<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(/,?\s*\(?(?:e\.g\.|for example|such as)\s*ORD-\d+\)?/gi, "") as T;
+  }
+  if (Array.isArray(value)) return value.map(stripExampleOrderIds) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, stripExampleOrderIds(v)])
+    ) as T;
+  }
+  return value;
+}
+
 function toToolConfig(tools: GatewayTool[]): { tools: Tool[] } {
   return {
     tools: tools.map(
       (t): Tool => ({
         toolSpec: {
           name: t.name,
-          ...(t.description ? { description: t.description } : {}),
+          ...(t.description ? { description: stripExampleOrderIds(t.description) } : {}),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          inputSchema: { json: t.inputSchema as any },
+          inputSchema: { json: stripExampleOrderIds(t.inputSchema) as any },
         },
       })
     ),
   };
 }
 
-/** The model-driven loop: Converse -> tool_use -> gateway -> toolResult -> Converse. */
+/**
+ * One request = one gateway connection, opened here and closed when the request ends. Every
+ * gateway call in the loop (list and tool calls) shares it; the user's token stays with this
+ * request only.
+ */
 async function runAgent(
   prompt: string,
-  token: string
-): Promise<{ answer: string; steps: Step[] }> {
-  const listed = await listGatewayTools(token);
+  token: string,
+  history: Message[]
+): Promise<AgentResult> {
+  const opened = await openGatewaySession(token);
+  if (opened.status !== "ok") {
+    throw new UpstreamError(`Gateway connection failed (${opened.status}): ${opened.message}`);
+  }
+  try {
+    return await runAgentLoop(prompt, token, opened.session, history);
+  } finally {
+    await opened.session.close();
+  }
+}
+
+/** The model-driven loop: Converse -> tool_use (in parallel) -> gateway -> toolResult -> Converse. */
+async function runAgentLoop(
+  prompt: string,
+  token: string,
+  session: GatewaySession,
+  history: Message[]
+): Promise<AgentResult> {
+  const listed = await session.listTools();
   if (listed.status !== "ok") {
     throw new UpstreamError(`Gateway tools/list failed (${listed.status}): ${listed.message}`);
   }
@@ -111,11 +287,26 @@ async function runAgent(
   });
   console.log(`[agent] ${tools.length} gateway tools kept: ${tools.map((t) => t.name).join(", ")}`);
   const known = new Set(tools.map((t) => t.name));
-  // Bedrock rejects an empty tool list, so omit toolConfig entirely when there are none.
-  const toolConfig = tools.length > 0 ? toToolConfig(tools) : undefined;
+  // start_refund is the agent's own tool, offered alongside the filtered gateway tools. It is
+  // always present, so the tool list is never empty.
+  const toolConfig = { tools: [...toToolConfig(tools).tools, startRefundTool] };
 
-  const messages: Message[] = [{ role: "user", content: [{ text: prompt }] }];
+  const messages: Message[] = [...history, { role: "user", content: [{ text: prompt }] }];
   const steps: Step[] = [];
+  const confirmUrls: string[] = [];
+  const refunds: RefundCard[] = [];
+
+  const withRefunds = (answer: string): AgentResult => ({
+    answer,
+    steps,
+    ...(refunds.length ? { refund: refunds[refunds.length - 1], refunds } : {}),
+  });
+  // If a refund was already started, a later failure must not discard its confirm card.
+  const keepCardOr = (err: UpstreamError): AgentResult => {
+    if (refunds.length === 0) throw err;
+    console.log("[agent] returning the captured refund card despite a later failure");
+    return withRefunds(READY_TO_CONFIRM);
+  };
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     let response;
@@ -125,7 +316,7 @@ async function runAgent(
           modelId: MODEL_ID,
           system: [{ text: SYSTEM_PROMPT }],
           messages,
-          ...(toolConfig ? { toolConfig } : {}),
+          toolConfig,
         }),
         { abortSignal: AbortSignal.timeout(BEDROCK_TIMEOUT_MS) }
       );
@@ -133,11 +324,11 @@ async function runAgent(
       const name = err instanceof Error ? err.name : "Error";
       const message = err instanceof Error ? err.message : String(err);
       console.log(`[bedrock] converse failed: ${name}: ${message}`);
-      throw new UpstreamError(`Bedrock request failed (${name}): ${message}`);
+      return keepCardOr(new UpstreamError(`Bedrock request failed (${name}): ${message}`));
     }
 
     const assistant = response.output?.message;
-    if (!assistant) throw new UpstreamError("Bedrock returned no message.");
+    if (!assistant) return keepCardOr(new UpstreamError("Bedrock returned no message."));
     messages.push(assistant);
 
     if (response.stopReason !== "tool_use") {
@@ -146,41 +337,84 @@ async function runAgent(
         .filter((t): t is string => typeof t === "string")
         .join("\n")
         .trim();
-      return { answer, steps };
+      return withRefunds(cleanConfirmLinks(answer, confirmUrls));
     }
+
+    // Run every tool the model asked for in this turn concurrently. Each call settles on its
+    // own: a failure becomes that call's error result and never cancels the others. Results go
+    // back in a single message, in the order requested.
+    const uses = (assistant.content ?? []).flatMap((b) =>
+      b.toolUse?.toolUseId && b.toolUse.name ? [b.toolUse] : []
+    );
+    const batchHasOthers = (name: string) => uses.some((u) => u.name !== name);
+
+    const outcomes = await Promise.all(
+      uses.map(async (use): Promise<ToolOutcome> => {
+        const name = use.name as string;
+        const input =
+          use.input && typeof use.input === "object" && !Array.isArray(use.input)
+            ? (use.input as Record<string, unknown>)
+            : {};
+        try {
+          if (name === START_REFUND_TOOL_NAME) {
+            // Starting a refund must follow the lookups, in a later turn — never in their batch.
+            if (batchHasOthers(START_REFUND_TOOL_NAME)) {
+              console.log(`[agent] tool ${name} -> refused (same turn as other tools)`);
+              return {
+                ok: false,
+                content: {
+                  text:
+                    "start_refund was not run: request it alone, in a later turn, after the " +
+                    "lookups have succeeded.",
+                },
+              };
+            }
+            const result = await startRefund(token, input);
+            console.log(`[agent] tool ${name} -> ${result.ok ? "ok" : "error"}`);
+            return result.ok
+              ? { ok: true, content: { text: JSON.stringify(result.data) }, refundData: result.data }
+              : { ok: false, content: { text: result.message } };
+          }
+          if (!known.has(name)) {
+            console.log(`[agent] tool ${name} -> not offered`);
+            return { ok: false, content: { text: `Unknown tool "${name}". Use only the provided tools.` } };
+          }
+          const result = await session.callTool(name, input);
+          console.log(`[agent] tool ${name} -> ${result.status}`);
+          return result.status === "ok"
+            ? { ok: true, content: { text: JSON.stringify(result.data ?? null) } }
+            : { ok: false, content: { text: result.message } };
+        } catch (err) {
+          console.log(`[agent] tool ${name} -> failed: ${err instanceof Error ? err.name : "Error"}`);
+          return { ok: false, content: { text: "The tool call failed unexpectedly." } };
+        }
+      })
+    );
 
     const results: ContentBlock[] = [];
-    for (const block of assistant.content ?? []) {
-      const use = block.toolUse;
-      if (!use?.toolUseId || !use.name) continue;
-      const input =
-        use.input && typeof use.input === "object" && !Array.isArray(use.input)
-          ? (use.input as Record<string, unknown>)
-          : {};
-
-      let ok = false;
-      let content: ToolResultContentBlock;
-      if (!known.has(use.name)) {
-        content = { text: `Unknown tool "${use.name}". Use only the provided tools.` };
-        console.log(`[agent] tool ${use.name} -> not offered`);
-      } else {
-        const result = await callGatewayTool(token, use.name, input);
-        if (result.status === "ok") {
-          ok = true;
-          content = { text: JSON.stringify(result.data ?? null) };
-        } else {
-          content = { text: result.message };
-        }
-        console.log(`[agent] tool ${use.name} -> ${result.status}`);
+    outcomes.forEach((o, i) => {
+      const use = uses[i];
+      steps.push({ tool: use.name as string, ok: o.ok });
+      if (o.refundData) {
+        if (typeof o.refundData.confirmUrl === "string") confirmUrls.push(o.refundData.confirmUrl);
+        const card = toRefundCard(o.refundData);
+        if (card && !refunds.some((c) => c.requestId === card.requestId)) refunds.push(card);
       }
-      steps.push({ tool: use.name, ok });
       results.push({
-        toolResult: { toolUseId: use.toolUseId, content: [content], status: ok ? "success" : "error" },
+        toolResult: {
+          toolUseId: use.toolUseId as string,
+          content: [o.content],
+          status: o.ok ? "success" : "error",
+        },
       });
-    }
+    });
     messages.push({ role: "user", content: results });
   }
 
+  if (refunds.length) {
+    console.log("[agent] iteration limit reached; returning the captured refund card");
+    return withRefunds(READY_TO_CONFIRM);
+  }
   return {
     answer: `I couldn't finish within ${MAX_ITERATIONS} steps. Please try a more specific request.`,
     steps,
@@ -210,11 +444,12 @@ const server = createServer(async (req, res) => {
       return send(res, 400, { error: "Request body must be valid JSON." });
     }
     const prompt = (parsed as { prompt?: unknown } | null)?.prompt;
+    const history = toHistoryMessages((parsed as { history?: unknown } | null)?.history);
     if (typeof prompt !== "string" || prompt.trim() === "") {
       return send(res, 400, { error: "`prompt` must be a non-empty string." });
     }
     try {
-      return send(res, 200, await runAgent(prompt, gatewayToken));
+      return send(res, 200, await runAgent(prompt, gatewayToken, history));
     } catch (err) {
       if (err instanceof UpstreamError) return send(res, 502, { error: err.message });
       const message = err instanceof Error ? `${err.name}: ${err.message}` : "Unexpected error.";

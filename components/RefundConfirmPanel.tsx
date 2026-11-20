@@ -18,9 +18,18 @@ import {
 export default function RefundConfirmPanel({
   initial,
   initialReply,
+  embedded = false,
+  onChange,
 }: {
   initial: RefundRequestView;
   initialReply: string;
+  /**
+   * Inside a chat: drop the closing "close this tab / open RefundBot" footer and the panel's
+   * own message line — the chat shows the same text as a bot reply, so it isn't repeated.
+   */
+  embedded?: boolean;
+  /** Called with the refund's new state and the reply text after confirm/decline succeeds. */
+  onChange?: (request: RefundRequestView | undefined, reply: string) => void;
 }) {
   const [view, setView] = useState(initial);
   const [reply, setReply] = useState(initialReply);
@@ -45,6 +54,7 @@ export default function RefundConfirmPanel({
     if (d.request) setView(d.request);
     setReply(d.reply);
     setError(undefined);
+    onChange?.(d.request, d.reply);
   }
 
   async function beginConfirm() {
@@ -105,7 +115,7 @@ export default function RefundConfirmPanel({
 
   return (
     <div className="max-w-md space-y-4">
-      <p className="text-sm text-ink">{reply}</p>
+      {embedded ? null : <p className="text-sm text-ink">{reply}</p>}
       {pending ? (
         <RefundConfirmationSlip
           heading="Confirm your refund"
@@ -119,7 +129,7 @@ export default function RefundConfirmPanel({
           onCancel={decline}
           cancelLabel="No, cancel it"
         />
-      ) : (
+      ) : embedded ? null : (
         <p className="text-sm text-ink-soft">
           You can close this tab and go back to your chat — ask it for the refund status any
           time. <Link href="/refund" className="underline">Open RefundBot</Link>
