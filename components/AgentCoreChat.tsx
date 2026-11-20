@@ -172,7 +172,14 @@ function Markdown({ text }: { text: string }) {
   return <div className="space-y-2">{blocks}</div>;
 }
 
-export default function AgentCoreChat({ customerName }: { customerName?: string }) {
+export default function AgentCoreChat({
+  customerName,
+  onActiveRequest,
+}: {
+  customerName?: string;
+  /** Told about the latest state of the refund the agent started (or undefined on New chat). */
+  onActiveRequest?: (view: RefundRequestView | undefined) => void;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => [greeting(customerName)]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -197,6 +204,7 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
     if (view) {
       setRequests((r) => ({ ...r, [view.id]: view }));
       lastKey.current[view.id] = keyOf(view);
+      onActiveRequest?.(view);
     }
     if (reply) push({ role: "bot", text: reply });
   }
@@ -214,7 +222,10 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
         if (!res.ok) return;
         const d = (await res.json()) as { request: RefundRequestView; reply: string };
         if (keyOf(d.request) !== lastKey.current[waitingId]) adopt(d.request, d.reply);
-        else setRequests((r) => ({ ...r, [d.request.id]: d.request }));
+        else {
+          setRequests((r) => ({ ...r, [d.request.id]: d.request }));
+          onActiveRequest?.(d.request);
+        }
       } catch {
         // transient; next tick
       }
@@ -267,6 +278,7 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
     chatId.current = null;
     setRequests({});
     lastKey.current = {};
+    onActiveRequest?.(undefined);
     setMessages([greeting(customerName)]);
     setInput("");
   }
