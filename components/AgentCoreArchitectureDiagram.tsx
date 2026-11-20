@@ -45,7 +45,6 @@ type NodeId =
   | "gateway"
   | "interceptor"
   | "fga"
-  | "tags"
   | "verify"
   | "order-history"
   | "customer-scoring"
@@ -75,24 +74,18 @@ const NODES: Record<NodeId, NodeMeta> = {
       "The signed-in customer, chatting at /agentcore. Their web-login access token is sent to the agent as a Bearer token — by the server, never exposed to the browser. They confirm any refund themselves, in the browser, through FusionAuth's step-up.",
   },
   fusionauth: {
-    x: 560, y: 20, w: 330, h: 92,
+    x: 560, y: 110, w: 330, h: 92,
     title: "FusionAuth", subtitle: "login · token exchange · Entity Grants",
     doc: { to: "tokenExchange", label: "OAuth Token Exchange" },
     accent: "var(--color-brand)",
     description:
       "Signs the customer in (Authorization Code + PKCE) and issues each narrower token (RFC 8693): one service's audience at a time, only if a Grant from the actor to that audience exists right now. Keeps sub = the customer.",
   },
-  tags: {
-    x: 290, y: 150, w: 250, h: 80,
-    title: "Tag filter", subtitle: "keeps each tool under its own target",
-    description:
-      "Runs in the agent, not in the MCP server. Each MCP tool carries a service tag in its _meta.service, which the server publishes. The agent keeps a gateway tool only when the text before the triple underscore in its name (its gateway target) equals that tag, so each tool stays under its own target and the model is only offered the intended services.",
-  },
   runtime: {
     x: 290, y: 280, w: 250, h: 90,
-    title: "AgentCore Runtime", subtitle: "agent · Claude on Bedrock",
+    title: "AgentCore Runtime", subtitle: "agent · Claude on Bedrock\nfilters tools by service tag",
     description:
-      "Runs the agent. Claude on Amazon Bedrock plans in a loop of tool calls, running independent lookups together, and the agent applies the tag filter to the tools the gateway lists. The runtime checks the customer's token before the agent runs, and the agent only ever uses that customer's own token.",
+      "Runs the agent. Claude on Amazon Bedrock plans in a loop of tool calls, running independent lookups together. The agent keeps each tool under its own gateway target: it keeps a tool the gateway lists only when the text before the triple underscore in its name (the target) equals the tool's _meta.service tag, which the MCP server publishes. So the model is only offered the intended services. The runtime checks the customer's token before the agent runs, and the agent only ever uses that customer's own token.",
   },
   gateway: {
     x: 290, y: 430, w: 250, h: 90,
@@ -156,7 +149,7 @@ const NODES: Record<NodeId, NodeMeta> = {
 
 const AGENTCORE = { x: 270, y: 120, w: 290, h: 440, label: "Amazon Bedrock AgentCore" };
 const MCP = { x: 640, y: 160, w: 580, h: 410, label: "RefundBot MCP Server · /api/mcp" };
-const AGENTCORE_CHILDREN: NodeId[] = ["tags", "runtime", "gateway", "interceptor"];
+const AGENTCORE_CHILDREN: NodeId[] = ["runtime", "gateway", "interceptor"];
 const MCP_CHILDREN: NodeId[] = [
   "verify",
   "order-history",
@@ -184,7 +177,6 @@ const FRAME_INFO: Record<FrameId, { title: string; text: string }> = {
 type EdgeId =
   | "login"
   | "ask"
-  | "filter"
   | "tools"
   | "intercept"
   | "ownership"
@@ -206,13 +198,12 @@ interface EdgeMeta {
 const SVC_Y = { "order-history": 359, "customer-scoring": 454, "refund-budget": 549 };
 
 const EDGES: Record<EdgeId, EdgeMeta> = {
-  login: { d: "M80,280 V40 H556", label: "PKCE login → access token", lx: 300, ly: 34 },
+  login: { d: "M80,280 V156 H556", label: "PKCE login → access token", lx: 300, ly: 150 },
   ask: { d: "M210,300 H286", label: "ask", lx: 248, ly: 292 },
-  filter: { d: "M415,230 V276", label: "filtered tools", lx: 482, ly: 259 },
   tools: { d: "M415,370 V426", label: "tools/list · call", lx: 492, ly: 404 },
   intercept: { d: "M415,520 V576", label: "tools/call", lx: 468, ly: 554 },
   ownership: { d: "M415,670 V726", label: "ownership", lx: 474, ly: 712 },
-  exchange: { d: "M540,455 H575 V116", label: "token exchange", lx: 633, ly: 250 },
+  exchange: { d: "M540,455 H575 V206", label: "token exchange", lx: 633, ly: 240 },
   call: { d: "M540,480 H656", label: "Bearer", lx: 612, ly: 472 },
   "svc-order-history": { d: `M860,480 H895 V${SVC_Y["order-history"]} H926` },
   "svc-customer-scoring": { d: `M860,480 H895 V${SVC_Y["customer-scoring"]} H926` },
@@ -445,7 +436,9 @@ function Node({
   onHover: (id: NodeId | null) => void;
 }) {
   const n = NODES[id];
-  const subtitle = wrapSubtitle(n.subtitle, Math.floor((n.w - 28) / SUB_CHAR_W));
+  const subtitle = n.subtitle
+    .split("\n")
+    .flatMap((part) => wrapSubtitle(part, Math.floor((n.w - 28) / SUB_CHAR_W)));
   return (
     <g
       tabIndex={0}
