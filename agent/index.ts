@@ -7,7 +7,7 @@ import {
   type Tool,
   type ToolResultContentBlock,
 } from "@aws-sdk/client-bedrock-runtime";
-import { callGatewayTool, listGatewayTools, type GatewayTool } from "./gateway";
+import { openGatewaySession, type GatewaySession, type GatewayTool } from "./gateway";
 import { START_REFUND_TOOL_NAME, startRefund, startRefundTool } from "./refund";
 
 const PORT = 8080;
@@ -23,7 +23,11 @@ const SYSTEM_PROMPT =
   "Never invent order data; every order detail you state must come from a tool result. " +
   "If a tool is denied or fails, say so plainly and stop — do not retry or work around it. " +
   "You can start a refund with start_refund, but only after you have looked up the order " +
-  "with the other tools. start_refund only STARTS the refund: the customer must still " +
+  "with the other tools. When lookups are independent, request them together in a single " +
+  "turn instead of one at a time: for an order, ask for its order history, the customer " +
+  "history and the refund budget check in the same turn. Request start_refund only in a " +
+  "LATER turn, after those lookups have succeeded — never in the same turn as them. " +
+  "start_refund only STARTS the refund: the customer must still " +
   "confirm it themselves in their browser. When start_refund succeeds and returns a " +
   "confirmUrl, the page shows the order, the amount and the confirm button right under your " +
   "answer, so reply with ONE short line saying the refund is ready to confirm below — and " +
@@ -85,6 +89,14 @@ function cleanConfirmLinks(answer: string, urls: string[]): string {
     out = out.replace(new RegExp(`${escaped}(?:\\\\[nrt]|/n)+`, "g"), url);
   }
   return out;
+}
+
+/** What one tool call in a turn produced. Side effects are applied after the whole batch, in order. */
+interface ToolOutcome {
+  ok: boolean;
+  content: ToolResultContentBlock;
+  /** start_refund's result data, when it succeeded. */
+  refundData?: Record<string, unknown>;
 }
 
 /** Thrown for failures that should surface as a 502 with a clear message. */
@@ -166,12 +178,33 @@ function toToolConfig(tools: GatewayTool[]): { tools: Tool[] } {
   };
 }
 
-/** The model-driven loop: Converse -> tool_use -> gateway -> toolResult -> Converse. */
+/**
+ * One request = one gateway connection, opened here and closed when the request ends. Every
+ * gateway call in the loop (list and tool calls) shares it; the user's token stays with this
+ * request only.
+ */
 async function runAgent(
   prompt: string,
   token: string
 ): Promise<{ answer: string; steps: Step[]; refund?: RefundCard }> {
-  const listed = await listGatewayTools(token);
+  const opened = await openGatewaySession(token);
+  if (opened.status !== "ok") {
+    throw new UpstreamError(`Gateway connection failed (${opened.status}): ${opened.message}`);
+  }
+  try {
+    return await runAgentLoop(prompt, token, opened.session);
+  } finally {
+    await opened.session.close();
+  }
+}
+
+/** The model-driven loop: Converse -> tool_use (in parallel) -> gateway -> toolResult -> Converse. */
+async function runAgentLoop(
+  prompt: string,
+  token: string,
+  session: GatewaySession
+): Promise<{ answer: string; steps: Step[]; refund?: RefundCard }> {
+  const listed = await session.listTools();
   if (listed.status !== "ok") {
     throw new UpstreamError(`Gateway tools/list failed (${listed.status}): ${listed.message}`);
   }
@@ -228,46 +261,73 @@ async function runAgent(
       return { answer: cleanConfirmLinks(answer, confirmUrls), steps, ...(refund ? { refund } : {}) };
     }
 
-    const results: ContentBlock[] = [];
-    for (const block of assistant.content ?? []) {
-      const use = block.toolUse;
-      if (!use?.toolUseId || !use.name) continue;
-      const input =
-        use.input && typeof use.input === "object" && !Array.isArray(use.input)
-          ? (use.input as Record<string, unknown>)
-          : {};
+    // Run every tool the model asked for in this turn concurrently. Each call settles on its
+    // own: a failure becomes that call's error result and never cancels the others. Results go
+    // back in a single message, in the order requested.
+    const uses = (assistant.content ?? []).flatMap((b) =>
+      b.toolUse?.toolUseId && b.toolUse.name ? [b.toolUse] : []
+    );
+    const batchHasOthers = (name: string) => uses.some((u) => u.name !== name);
 
-      let ok = false;
-      let content: ToolResultContentBlock;
-      if (use.name === START_REFUND_TOOL_NAME) {
-        const result = await startRefund(token, input);
-        if (result.ok) {
-          ok = true;
-          content = { text: JSON.stringify(result.data) };
-          if (typeof result.data.confirmUrl === "string") confirmUrls.push(result.data.confirmUrl);
-          refund = toRefundCard(result.data) ?? refund;
-        } else {
-          content = { text: result.message };
+    const outcomes = await Promise.all(
+      uses.map(async (use): Promise<ToolOutcome> => {
+        const name = use.name as string;
+        const input =
+          use.input && typeof use.input === "object" && !Array.isArray(use.input)
+            ? (use.input as Record<string, unknown>)
+            : {};
+        try {
+          if (name === START_REFUND_TOOL_NAME) {
+            // Starting a refund must follow the lookups, in a later turn — never in their batch.
+            if (batchHasOthers(START_REFUND_TOOL_NAME)) {
+              console.log(`[agent] tool ${name} -> refused (same turn as other tools)`);
+              return {
+                ok: false,
+                content: {
+                  text:
+                    "start_refund was not run: request it alone, in a later turn, after the " +
+                    "lookups have succeeded.",
+                },
+              };
+            }
+            const result = await startRefund(token, input);
+            console.log(`[agent] tool ${name} -> ${result.ok ? "ok" : "error"}`);
+            return result.ok
+              ? { ok: true, content: { text: JSON.stringify(result.data) }, refundData: result.data }
+              : { ok: false, content: { text: result.message } };
+          }
+          if (!known.has(name)) {
+            console.log(`[agent] tool ${name} -> not offered`);
+            return { ok: false, content: { text: `Unknown tool "${name}". Use only the provided tools.` } };
+          }
+          const result = await session.callTool(name, input);
+          console.log(`[agent] tool ${name} -> ${result.status}`);
+          return result.status === "ok"
+            ? { ok: true, content: { text: JSON.stringify(result.data ?? null) } }
+            : { ok: false, content: { text: result.message } };
+        } catch (err) {
+          console.log(`[agent] tool ${name} -> failed: ${err instanceof Error ? err.name : "Error"}`);
+          return { ok: false, content: { text: "The tool call failed unexpectedly." } };
         }
-        console.log(`[agent] tool ${use.name} -> ${result.ok ? "ok" : "error"}`);
-      } else if (!known.has(use.name)) {
-        content = { text: `Unknown tool "${use.name}". Use only the provided tools.` };
-        console.log(`[agent] tool ${use.name} -> not offered`);
-      } else {
-        const result = await callGatewayTool(token, use.name, input);
-        if (result.status === "ok") {
-          ok = true;
-          content = { text: JSON.stringify(result.data ?? null) };
-        } else {
-          content = { text: result.message };
-        }
-        console.log(`[agent] tool ${use.name} -> ${result.status}`);
+      })
+    );
+
+    const results: ContentBlock[] = [];
+    outcomes.forEach((o, i) => {
+      const use = uses[i];
+      steps.push({ tool: use.name as string, ok: o.ok });
+      if (o.refundData) {
+        if (typeof o.refundData.confirmUrl === "string") confirmUrls.push(o.refundData.confirmUrl);
+        refund = toRefundCard(o.refundData) ?? refund;
       }
-      steps.push({ tool: use.name, ok });
       results.push({
-        toolResult: { toolUseId: use.toolUseId, content: [content], status: ok ? "success" : "error" },
+        toolResult: {
+          toolUseId: use.toolUseId as string,
+          content: [o.content],
+          status: o.ok ? "success" : "error",
+        },
       });
-    }
+    });
     messages.push({ role: "user", content: results });
   }
 

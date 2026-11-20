@@ -96,20 +96,38 @@ const loggingFetch: typeof fetch = async (input, init) => {
 
 type Failure = Exclude<GatewayResult, { status: "ok" | "tool_error" }>;
 
-/** Open a client, run `use`, always close. Failures come back as a tagged result. */
-async function withGatewayClient<T>(
-  token: string,
-  label: string,
-  use: (client: Client, remaining: () => number) => Promise<T>
-): Promise<{ ok: true; value: T } | { ok: false; failure: Failure }> {
+/** Turn a thrown error into a tagged failure with an accurate message (timeout vs network). */
+function failureFrom(err: unknown, label: string): Failure {
+  const detail = err instanceof Error ? err.message : String(err);
+  console.log(`[gateway] ${label} failed: ${err instanceof Error ? err.name : "Error"}: ${detail}`);
+  if (isTimeout(err)) {
+    return { status: "timeout", message: `Gateway did not respond in time: ${detail}` };
+  }
+  return {
+    status: "network_error",
+    message: `Could not complete the gateway request (connection, auth, or protocol failure): ${detail}`,
+  };
+}
+
+/**
+ * One gateway connection for a whole request: connect once, run any number of operations
+ * (including concurrently — the MCP client multiplexes them), then close. The bearer token is
+ * fixed to this session and is never shared with another request.
+ */
+export interface GatewaySession {
+  listTools(): Promise<GatewayListResult>;
+  callTool(name: string, args: Record<string, unknown>): Promise<GatewayResult>;
+  close(): Promise<void>;
+}
+
+export async function openGatewaySession(
+  token: string
+): Promise<{ status: "ok"; session: GatewaySession } | Failure> {
   const url = process.env.GATEWAY_URL?.trim();
   if (!url || !token) {
     return {
-      ok: false,
-      failure: {
-        status: "not_configured",
-        message: "GATEWAY_URL must be set and a bearer token supplied to call the gateway.",
-      },
+      status: "not_configured",
+      message: "GATEWAY_URL must be set and a bearer token supplied to call the gateway.",
     };
   }
 
@@ -118,89 +136,108 @@ async function withGatewayClient<T>(
     fetch: loggingFetch,
   });
   const client = new Client({ name: "refundbot-agent", version: "0.1.0" });
-  const deadline = Date.now() + timeoutMs();
-  const remaining = () => Math.max(1_000, deadline - Date.now());
-
-  try {
-    await withDeadline(client.connect(transport), Math.min(10_000, remaining()), "Gateway connect");
-    return { ok: true, value: await use(client, remaining) };
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.log(`[gateway] ${label} failed: ${err instanceof Error ? err.name : "Error"}: ${detail}`);
-    if (isTimeout(err)) {
-      return { ok: false, failure: { status: "timeout", message: `Gateway did not respond in time: ${detail}` } };
-    }
-    return {
-      ok: false,
-      failure: {
-        status: "network_error",
-        message: `Could not complete the gateway request (connection, auth, or protocol failure): ${detail}`,
-      },
-    };
-  } finally {
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
     try {
       await withDeadline(client.close(), 3_000, "Gateway close");
     } catch {
       // Closing must never mask the real result.
     }
+  };
+
+  try {
+    await withDeadline(client.connect(transport), Math.min(10_000, timeoutMs()), "Gateway connect");
+  } catch (err) {
+    await close();
+    return failureFrom(err, "connect");
+  }
+
+  // Each operation gets its own time budget (not one shared across the request).
+  const session: GatewaySession = {
+    async listTools() {
+      try {
+        const tools: GatewayTool[] = [];
+        let cursor: string | undefined;
+        for (let page = 0; page < 20; page++) {
+          const res = await withDeadline(
+            client.listTools(cursor ? { cursor } : undefined, { timeout: timeoutMs() }),
+            timeoutMs(),
+            "Gateway tools/list"
+          );
+          for (const t of res.tools) {
+            tools.push({
+              name: t.name,
+              description: t.description,
+              inputSchema: (t.inputSchema ?? { type: "object", properties: {} }) as Record<string, unknown>,
+              _meta: t._meta as Record<string, unknown> | undefined,
+            });
+          }
+          cursor = res.nextCursor;
+          if (!cursor) break;
+        }
+        return { status: "ok", tools };
+      } catch (err) {
+        return failureFrom(err, "tools/list");
+      }
+    },
+
+    async callTool(name, args) {
+      try {
+        const res = await withDeadline(
+          client.callTool({ name, arguments: args }, { timeout: timeoutMs() }),
+          timeoutMs(),
+          `Gateway ${name} call`
+        );
+        const content = (res.content ?? []) as Array<{ type: string; text?: string }>;
+        const text = content.find((b) => b.type === "text")?.text;
+        let data: unknown = text;
+        try {
+          data = text ? JSON.parse(text) : undefined;
+        } catch {
+          // Not JSON; keep the raw text.
+        }
+        if (res.isError) {
+          return {
+            status: "tool_error",
+            message: typeof text === "string" && text ? text : "The gateway tool reported an error.",
+            data,
+          };
+        }
+        return { status: "ok", data };
+      } catch (err) {
+        return failureFrom(err, `tools/call (${name})`);
+      }
+    },
+
+    close,
+  };
+  return { status: "ok", session };
+}
+
+/** One-shot tools/list on its own connection: open, list, close. */
+export async function listGatewayTools(token: string): Promise<GatewayListResult> {
+  const opened = await openGatewaySession(token);
+  if (opened.status !== "ok") return opened;
+  try {
+    return await opened.session.listTools();
+  } finally {
+    await opened.session.close();
   }
 }
 
-/** tools/list: every tool the gateway exposes to this token, with its full prefixed name. */
-export async function listGatewayTools(token: string): Promise<GatewayListResult> {
-  const out = await withGatewayClient(token, "tools/list", async (client, remaining) => {
-    const tools: GatewayTool[] = [];
-    let cursor: string | undefined;
-    for (let page = 0; page < 20; page++) {
-      const res = await withDeadline(
-        client.listTools(cursor ? { cursor } : undefined, { timeout: remaining() }),
-        remaining(),
-        "Gateway tools/list"
-      );
-      for (const t of res.tools) {
-        tools.push({
-          name: t.name,
-          description: t.description,
-          inputSchema: (t.inputSchema ?? { type: "object", properties: {} }) as Record<string, unknown>,
-          _meta: t._meta as Record<string, unknown> | undefined,
-        });
-      }
-      cursor = res.nextCursor;
-      if (!cursor) break;
-    }
-    return tools;
-  });
-  return out.ok ? { status: "ok", tools: out.value } : out.failure;
-}
-
-/** tools/call by the full prefixed name returned from listGatewayTools. */
+/** One-shot tools/call on its own connection, by the full prefixed name from listGatewayTools. */
 export async function callGatewayTool(
   token: string,
   name: string,
   args: Record<string, unknown>
 ): Promise<GatewayResult> {
-  const out = await withGatewayClient(token, `tools/call (${name})`, async (client, remaining) => {
-    const res = await withDeadline(
-      client.callTool({ name, arguments: args }, { timeout: remaining() }),
-      remaining(),
-      `Gateway ${name} call`
-    );
-    const content = (res.content ?? []) as Array<{ type: string; text?: string }>;
-    const text = content.find((b) => b.type === "text")?.text;
-    let data: unknown = text;
-    try {
-      data = text ? JSON.parse(text) : undefined;
-    } catch {
-      // Not JSON; keep the raw text.
-    }
-    if (res.isError) {
-      return {
-        status: "tool_error" as const,
-        message: typeof text === "string" && text ? text : "The gateway tool reported an error.",
-        data,
-      };
-    }
-    return { status: "ok" as const, data };
-  });
-  return out.ok ? out.value : out.failure;
+  const opened = await openGatewaySession(token);
+  if (opened.status !== "ok") return opened;
+  try {
+    return await opened.session.callTool(name, args);
+  } finally {
+    await opened.session.close();
+  }
 }
