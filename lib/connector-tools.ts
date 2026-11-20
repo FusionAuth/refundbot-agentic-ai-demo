@@ -68,7 +68,7 @@ function firstRefusal(view: RefundRequestView): string | null {
   return null;
 }
 
-function summarize(view: RefundRequestView) {
+export function summarize(view: RefundRequestView) {
   const awaitingCustomer =
     view.decision === "awaiting_approvals" && view.customer.state === "pending";
   return {
