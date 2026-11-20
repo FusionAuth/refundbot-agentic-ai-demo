@@ -15,13 +15,24 @@ import {
  * claude.ai via /mcp). Same round trip as the web chat's slip:
  * /api/two-factor/status → (/verify) → POST /api/refund { action: "confirm" }.
  */
+/** Where the closing link goes back to. Fixed values only — never a caller-supplied URL. */
+const RETURN_LINKS = {
+  refund: { href: "/refund", label: "Open RefundBot" },
+  agentcore: { href: "/agentcore", label: "Back to the agent chat" },
+} as const;
+
+export type ConfirmReturnTo = keyof typeof RETURN_LINKS;
+
 export default function RefundConfirmPanel({
   initial,
   initialReply,
+  returnTo = "refund",
 }: {
   initial: RefundRequestView;
   initialReply: string;
+  returnTo?: ConfirmReturnTo;
 }) {
+  const back = RETURN_LINKS[returnTo] ?? RETURN_LINKS.refund;
   const [view, setView] = useState(initial);
   const [reply, setReply] = useState(initialReply);
   const [phase, setPhase] = useState<"confirm" | "code">("confirm");
@@ -122,7 +133,7 @@ export default function RefundConfirmPanel({
       ) : (
         <p className="text-sm text-ink-soft">
           You can close this tab and go back to your chat — ask it for the refund status any
-          time. <Link href="/refund" className="underline">Open RefundBot</Link>
+          time. <Link href={back.href} className="underline">{back.label}</Link>
         </p>
       )}
     </div>

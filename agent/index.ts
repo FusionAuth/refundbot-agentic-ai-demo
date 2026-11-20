@@ -8,6 +8,7 @@ import {
   type ToolResultContentBlock,
 } from "@aws-sdk/client-bedrock-runtime";
 import { callGatewayTool, listGatewayTools, type GatewayTool } from "./gateway";
+import { START_REFUND_TOOL_NAME, startRefund, startRefundTool } from "./refund";
 
 const PORT = 8080;
 const MAX_BODY_BYTES = 1_000_000;
@@ -20,13 +21,68 @@ const MODEL_ID = process.env.BEDROCK_MODEL_ID || "anthropic.claude-sonnet-5-5";
 const SYSTEM_PROMPT =
   "You are a refund assistant. Use only the provided tools to look anything up or act. " +
   "Never invent order data; every order detail you state must come from a tool result. " +
-  "If a tool is denied or fails, say so plainly and stop — do not retry or work around it.";
+  "If a tool is denied or fails, say so plainly and stop — do not retry or work around it. " +
+  "You can start a refund with start_refund, but only after you have looked up the order " +
+  "with the other tools. start_refund only STARTS the refund: the customer must still " +
+  "confirm it themselves in their browser. When start_refund succeeds and returns a " +
+  "confirmUrl, say the refund is ready to confirm and tell the customer to use the confirm " +
+  "button shown below your answer. Do NOT print the confirmUrl or any link. If the result " +
+  "has no confirmUrl, the refund was not started: explain why from its message or failure. " +
+  "Use real line breaks; never type the characters backslash-n. You cannot confirm, " +
+  "approve, or complete a refund, so never say or imply that you did. If you need an order " +
+  "id, ask the customer for it; never suggest, guess, or give an example of a specific " +
+  "order id.";
 
 const bedrock = new BedrockRuntimeClient({ region: REGION });
 
 interface Step {
   tool: string;
   ok: boolean;
+}
+
+/** What the page needs to show the confirm card. Whitelisted and length-capped; no tokens. */
+interface RefundCard {
+  requestId: string;
+  orderId: string;
+  item: string | null;
+  amountCents: number | null;
+  confirmUrl: string;
+}
+
+const cap = (v: unknown, max: number): string | undefined =>
+  typeof v === "string" && v ? v.slice(0, max) : undefined;
+
+/** The card for a start_refund result — only when it came back with a usable confirmUrl. */
+function toRefundCard(data: Record<string, unknown>): RefundCard | undefined {
+  const confirmUrl = cap(data.confirmUrl, 500);
+  const requestId = cap(data.requestId, 64);
+  const orderId = cap(data.orderId, 64);
+  if (!confirmUrl || !requestId || !orderId || !/^https?:\/\//i.test(confirmUrl)) return undefined;
+  return {
+    requestId,
+    orderId,
+    item: cap(data.item, 200) ?? null,
+    amountCents:
+      typeof data.amountCents === "number" && Number.isFinite(data.amountCents)
+        ? Math.trunc(data.amountCents)
+        : null,
+    confirmUrl,
+  };
+}
+
+/**
+ * The model sometimes types a literal backslash-n (or /n) straight after a link instead of
+ * a real line break — and a browser turns that into ".../rf_1/n/n", a 404. Strip any such
+ * residue that directly follows a confirmUrl the start_refund tool actually returned, so the
+ * link in the answer is exactly that URL.
+ */
+function cleanConfirmLinks(answer: string, urls: string[]): string {
+  let out = answer;
+  for (const url of urls) {
+    const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(`${escaped}(?:\\\\[nrt]|/n)+`, "g"), url);
+  }
+  return out;
 }
 
 /** Thrown for failures that should surface as a 502 with a clear message. */
@@ -75,15 +131,33 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * Tool descriptions sometimes carry an example order id ("e.g. ORD-<number>") that the model then
+ * suggests to the customer as if it were theirs. Drop any such example from what the model
+ * sees — in the description and anywhere inside the input schema.
+ */
+function stripExampleOrderIds<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(/,?\s*\(?(?:e\.g\.|for example|such as)\s*ORD-\d+\)?/gi, "") as T;
+  }
+  if (Array.isArray(value)) return value.map(stripExampleOrderIds) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, stripExampleOrderIds(v)])
+    ) as T;
+  }
+  return value;
+}
+
 function toToolConfig(tools: GatewayTool[]): { tools: Tool[] } {
   return {
     tools: tools.map(
       (t): Tool => ({
         toolSpec: {
           name: t.name,
-          ...(t.description ? { description: t.description } : {}),
+          ...(t.description ? { description: stripExampleOrderIds(t.description) } : {}),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          inputSchema: { json: t.inputSchema as any },
+          inputSchema: { json: stripExampleOrderIds(t.inputSchema) as any },
         },
       })
     ),
@@ -94,7 +168,7 @@ function toToolConfig(tools: GatewayTool[]): { tools: Tool[] } {
 async function runAgent(
   prompt: string,
   token: string
-): Promise<{ answer: string; steps: Step[] }> {
+): Promise<{ answer: string; steps: Step[]; refund?: RefundCard }> {
   const listed = await listGatewayTools(token);
   if (listed.status !== "ok") {
     throw new UpstreamError(`Gateway tools/list failed (${listed.status}): ${listed.message}`);
@@ -111,11 +185,14 @@ async function runAgent(
   });
   console.log(`[agent] ${tools.length} gateway tools kept: ${tools.map((t) => t.name).join(", ")}`);
   const known = new Set(tools.map((t) => t.name));
-  // Bedrock rejects an empty tool list, so omit toolConfig entirely when there are none.
-  const toolConfig = tools.length > 0 ? toToolConfig(tools) : undefined;
+  // start_refund is the agent's own tool, offered alongside the filtered gateway tools. It is
+  // always present, so the tool list is never empty.
+  const toolConfig = { tools: [...toToolConfig(tools).tools, startRefundTool] };
 
   const messages: Message[] = [{ role: "user", content: [{ text: prompt }] }];
   const steps: Step[] = [];
+  const confirmUrls: string[] = [];
+  let refund: RefundCard | undefined;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     let response;
@@ -125,7 +202,7 @@ async function runAgent(
           modelId: MODEL_ID,
           system: [{ text: SYSTEM_PROMPT }],
           messages,
-          ...(toolConfig ? { toolConfig } : {}),
+          toolConfig,
         }),
         { abortSignal: AbortSignal.timeout(BEDROCK_TIMEOUT_MS) }
       );
@@ -146,7 +223,7 @@ async function runAgent(
         .filter((t): t is string => typeof t === "string")
         .join("\n")
         .trim();
-      return { answer, steps };
+      return { answer: cleanConfirmLinks(answer, confirmUrls), steps, ...(refund ? { refund } : {}) };
     }
 
     const results: ContentBlock[] = [];
@@ -160,7 +237,18 @@ async function runAgent(
 
       let ok = false;
       let content: ToolResultContentBlock;
-      if (!known.has(use.name)) {
+      if (use.name === START_REFUND_TOOL_NAME) {
+        const result = await startRefund(token, input);
+        if (result.ok) {
+          ok = true;
+          content = { text: JSON.stringify(result.data) };
+          if (typeof result.data.confirmUrl === "string") confirmUrls.push(result.data.confirmUrl);
+          refund = toRefundCard(result.data) ?? refund;
+        } else {
+          content = { text: result.message };
+        }
+        console.log(`[agent] tool ${use.name} -> ${result.ok ? "ok" : "error"}`);
+      } else if (!known.has(use.name)) {
         content = { text: `Unknown tool "${use.name}". Use only the provided tools.` };
         console.log(`[agent] tool ${use.name} -> not offered`);
       } else {

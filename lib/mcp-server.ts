@@ -140,7 +140,7 @@ export function registerRefundTools(server: McpServer): void {
         "Hop 1. Look up the order asked about (and the customer's own order count). It " +
         "answers for any order id — ownership is checked by FGA before this hop runs.",
       inputSchema: z.object({
-        orderId: z.string().optional().describe("The order to look up, e.g. ORD-1042."),
+        orderId: z.string().optional().describe("The order to look up."),
       }),
     },
     async ({ orderId }, ctx) => {

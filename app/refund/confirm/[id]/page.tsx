@@ -15,12 +15,24 @@ export const dynamic = "force-dynamic";
  */
 export default async function RefundConfirmPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string | string[] }>;
 }) {
   const { id } = await params;
+  const { from } = await searchParams;
+  // Only two known values; anything else (or nothing) keeps the web app's own return link.
+  const returnTo = from === "agentcore" ? "agentcore" : "refund";
   const session = await getSession();
-  if (!session) redirect(`/api/auth/login?redirect_uri=/refund/confirm/${encodeURIComponent(id)}`);
+  if (!session) {
+    const path = `/refund/confirm/${encodeURIComponent(id)}`;
+    redirect(
+      returnTo === "agentcore"
+        ? `/api/auth/login?redirect_uri=${encodeURIComponent(`${path}?from=agentcore`)}`
+        : `/api/auth/login?redirect_uri=${path}`
+    );
+  }
 
   const record = findRefund(id);
   if (!record || record.customerId !== session.userId) notFound();
@@ -36,7 +48,7 @@ export default async function RefundConfirmPage({
           Requested from your AI assistant. Only you can confirm it, here.
         </p>
       </div>
-      <RefundConfirmPanel initial={view} initialReply={replyFor(view)} />
+      <RefundConfirmPanel initial={view} initialReply={replyFor(view)} returnTo={returnTo} />
     </Shell>
   );
 }
