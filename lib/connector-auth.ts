@@ -76,10 +76,14 @@ export async function verifyConnectorToken(
       audience: connectorResourceUrl(),
     });
     claims = payload as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    console.warn(`[mcp connector] token rejected: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
-  if (claims.act) return undefined;
+  if (claims.act) {
+    console.warn("[mcp connector] token rejected: carries act (exchanged token)");
+    return undefined;
+  }
   const sub = typeof claims.sub === "string" ? claims.sub : "";
   if (!sub) return undefined;
 
