@@ -29,15 +29,18 @@ const SYSTEM_PROMPT =
   "LATER turn, after those lookups have succeeded — never in the same turn as them. " +
   "start_refund only STARTS the refund: the customer must still " +
   "confirm it themselves in their browser. When start_refund succeeds and returns a " +
-  "confirmUrl, the page shows the order, the amount and the confirm button right under your " +
-  "answer, so reply with ONE short line saying the refund is ready to confirm below — and " +
-  "nothing else: no order details, amounts, steps, or link. Do NOT print the confirmUrl or " +
-  "any link. If the result has no confirmUrl, the refund was not started: explain why from " +
+  "confirmUrl, the chat shows the order, the amount and the confirm button in a confirm " +
+  "card, so reply with ONE short line: \"Your refund is ready to confirm in the chat.\" — and " +
+  "nothing else: no order details, amounts, steps, or link. Never say where the card is " +
+  "(never say above or below); call it \"the confirm card\" or \"the confirm button in the " +
+  "chat\". Do NOT print the confirmUrl or any link. If the result has no confirmUrl, the refund was not started: explain why from " +
   "its message or failure. " +
   "Use real line breaks; never type the characters backslash-n. You cannot confirm, " +
   "approve, or complete a refund, so never say or imply that you did. If you need an order " +
   "id, ask the customer for it; never suggest, guess, or give an example of a specific " +
-  "order id.";
+  "order id. Lines in the earlier conversation that start with \"[System note:\" are facts " +
+  "about what already happened. Trust them, never repeat them to the customer, and never " +
+  "start the same refund again.";
 
 const bedrock = new BedrockRuntimeClient({ region: REGION });
 
@@ -98,6 +101,68 @@ interface ToolOutcome {
   /** start_refund's result data, when it succeeded. */
   refundData?: Record<string, unknown>;
 }
+
+/** Earlier chat turns, as plain text only. Never tokens, tool results, or card data. */
+interface HistoryMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
+const MAX_HISTORY_MESSAGES = 20; // last 10 exchanges
+const MAX_HISTORY_TEXT = 2000;
+
+/** The only "[System note:" line history may carry (see the matching filter in the web route). */
+const REFUND_NOTE =
+  /^\[System note: start_refund succeeded for order [A-Za-z0-9_-]{1,64}, request [A-Za-z0-9_-]{1,64}\. The customer sees a confirm card and must confirm it in the browser\.\]$/;
+function cleanNotes(text: string, role: "user" | "assistant"): string {
+  return text
+    .split("\n")
+    .filter((line) => {
+      const l = line.trim();
+      return !l.startsWith("[System note:") || (role === "assistant" && REFUND_NOTE.test(l));
+    })
+    .join("\n");
+}
+
+/**
+ * Validate and shape the request's `history`: whitelist role + text, cap the count and each
+ * message's size, and make it a valid Converse transcript (starts with a user message, roles
+ * alternate, ends on an assistant message because the new prompt is the next user turn).
+ * Consecutive same-role messages — e.g. a user message whose reply failed — are merged.
+ */
+function toHistoryMessages(raw: unknown): Message[] {
+  const items = (Array.isArray(raw) ? raw : []).slice(-MAX_HISTORY_MESSAGES).flatMap((m) => {
+    const x = m as { role?: unknown; text?: unknown } | null;
+    const role: "user" | "assistant" | undefined =
+      x?.role === "user" || x?.role === "assistant" ? x.role : undefined;
+    const text =
+      role && typeof x?.text === "string" ? cleanNotes(x.text, role).trim().slice(0, MAX_HISTORY_TEXT) : "";
+    return role && text ? [{ role, text }] : [];
+  });
+  const merged: HistoryMessage[] = [];
+  for (const m of items) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === m.role) last.text += `\n${m.text}`;
+    else merged.push({ ...m });
+  }
+  while (merged.length && merged[0].role !== "user") merged.shift();
+  while (merged.length && merged[merged.length - 1].role !== "assistant") merged.pop();
+  return merged.map((m) => ({ role: m.role, content: [{ text: m.text }] }));
+}
+
+/**
+ * What /invocations returns. `refunds` holds a card for every refund started this request;
+ * `refund` is the most recent one, kept so a page that only reads the single field still works.
+ */
+interface AgentResult {
+  answer: string;
+  steps: Step[];
+  refund?: RefundCard;
+  refunds?: RefundCard[];
+}
+
+/** Shown instead of an error when a refund was already started but the turn can't finish. */
+const READY_TO_CONFIRM = "Your refund is ready to confirm in the chat.";
 
 /** Thrown for failures that should surface as a 502 with a clear message. */
 class UpstreamError extends Error {}
@@ -185,14 +250,15 @@ function toToolConfig(tools: GatewayTool[]): { tools: Tool[] } {
  */
 async function runAgent(
   prompt: string,
-  token: string
-): Promise<{ answer: string; steps: Step[]; refund?: RefundCard }> {
+  token: string,
+  history: Message[]
+): Promise<AgentResult> {
   const opened = await openGatewaySession(token);
   if (opened.status !== "ok") {
     throw new UpstreamError(`Gateway connection failed (${opened.status}): ${opened.message}`);
   }
   try {
-    return await runAgentLoop(prompt, token, opened.session);
+    return await runAgentLoop(prompt, token, opened.session, history);
   } finally {
     await opened.session.close();
   }
@@ -202,8 +268,9 @@ async function runAgent(
 async function runAgentLoop(
   prompt: string,
   token: string,
-  session: GatewaySession
-): Promise<{ answer: string; steps: Step[]; refund?: RefundCard }> {
+  session: GatewaySession,
+  history: Message[]
+): Promise<AgentResult> {
   const listed = await session.listTools();
   if (listed.status !== "ok") {
     throw new UpstreamError(`Gateway tools/list failed (${listed.status}): ${listed.message}`);
@@ -224,10 +291,22 @@ async function runAgentLoop(
   // always present, so the tool list is never empty.
   const toolConfig = { tools: [...toToolConfig(tools).tools, startRefundTool] };
 
-  const messages: Message[] = [{ role: "user", content: [{ text: prompt }] }];
+  const messages: Message[] = [...history, { role: "user", content: [{ text: prompt }] }];
   const steps: Step[] = [];
   const confirmUrls: string[] = [];
-  let refund: RefundCard | undefined;
+  const refunds: RefundCard[] = [];
+
+  const withRefunds = (answer: string): AgentResult => ({
+    answer,
+    steps,
+    ...(refunds.length ? { refund: refunds[refunds.length - 1], refunds } : {}),
+  });
+  // If a refund was already started, a later failure must not discard its confirm card.
+  const keepCardOr = (err: UpstreamError): AgentResult => {
+    if (refunds.length === 0) throw err;
+    console.log("[agent] returning the captured refund card despite a later failure");
+    return withRefunds(READY_TO_CONFIRM);
+  };
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     let response;
@@ -245,11 +324,11 @@ async function runAgentLoop(
       const name = err instanceof Error ? err.name : "Error";
       const message = err instanceof Error ? err.message : String(err);
       console.log(`[bedrock] converse failed: ${name}: ${message}`);
-      throw new UpstreamError(`Bedrock request failed (${name}): ${message}`);
+      return keepCardOr(new UpstreamError(`Bedrock request failed (${name}): ${message}`));
     }
 
     const assistant = response.output?.message;
-    if (!assistant) throw new UpstreamError("Bedrock returned no message.");
+    if (!assistant) return keepCardOr(new UpstreamError("Bedrock returned no message."));
     messages.push(assistant);
 
     if (response.stopReason !== "tool_use") {
@@ -258,7 +337,7 @@ async function runAgentLoop(
         .filter((t): t is string => typeof t === "string")
         .join("\n")
         .trim();
-      return { answer: cleanConfirmLinks(answer, confirmUrls), steps, ...(refund ? { refund } : {}) };
+      return withRefunds(cleanConfirmLinks(answer, confirmUrls));
     }
 
     // Run every tool the model asked for in this turn concurrently. Each call settles on its
@@ -318,7 +397,8 @@ async function runAgentLoop(
       steps.push({ tool: use.name as string, ok: o.ok });
       if (o.refundData) {
         if (typeof o.refundData.confirmUrl === "string") confirmUrls.push(o.refundData.confirmUrl);
-        refund = toRefundCard(o.refundData) ?? refund;
+        const card = toRefundCard(o.refundData);
+        if (card && !refunds.some((c) => c.requestId === card.requestId)) refunds.push(card);
       }
       results.push({
         toolResult: {
@@ -331,6 +411,10 @@ async function runAgentLoop(
     messages.push({ role: "user", content: results });
   }
 
+  if (refunds.length) {
+    console.log("[agent] iteration limit reached; returning the captured refund card");
+    return withRefunds(READY_TO_CONFIRM);
+  }
   return {
     answer: `I couldn't finish within ${MAX_ITERATIONS} steps. Please try a more specific request.`,
     steps,
@@ -360,11 +444,12 @@ const server = createServer(async (req, res) => {
       return send(res, 400, { error: "Request body must be valid JSON." });
     }
     const prompt = (parsed as { prompt?: unknown } | null)?.prompt;
+    const history = toHistoryMessages((parsed as { history?: unknown } | null)?.history);
     if (typeof prompt !== "string" || prompt.trim() === "") {
       return send(res, 400, { error: "`prompt` must be a non-empty string." });
     }
     try {
-      return send(res, 200, await runAgent(prompt, gatewayToken));
+      return send(res, 200, await runAgent(prompt, gatewayToken, history));
     } catch (err) {
       if (err instanceof UpstreamError) return send(res, 502, { error: err.message });
       const message = err instanceof Error ? `${err.name}: ${err.message}` : "Unexpected error.";

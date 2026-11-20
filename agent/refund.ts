@@ -117,5 +117,21 @@ export async function startRefund(
   if (!body) {
     return { ok: false, message: "The refund service returned an unreadable response." };
   }
+
+  // The route answers 200 even when the refund was stopped (ownership denied, no such order,
+  // already refunded, budget...). Only a request now waiting on the customer's confirmation
+  // counts as started; anything else is a failure, with the route's own words passed on.
+  if (body.decision !== "awaiting_approvals") {
+    const message = typeof body.message === "string" ? body.message.slice(0, 500) : "";
+    const failure = typeof body.failure === "string" ? body.failure.slice(0, 500) : "";
+    const decision = typeof body.decision === "string" ? body.decision : "unknown";
+    console.log(`[agent] start_refund -> not started (decision ${decision.slice(0, 40)})`);
+    return {
+      ok: false,
+      message:
+        [message, failure].filter(Boolean).join(" ") ||
+        `The refund was not started (status: ${decision.slice(0, 40)}).`,
+    };
+  }
   return { ok: true, data: body };
 }

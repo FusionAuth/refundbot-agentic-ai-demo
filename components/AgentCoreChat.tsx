@@ -35,10 +35,95 @@ interface ChatMessage {
   role: "user" | "bot";
   text: string;
   steps?: Step[];
-  /** Set when the agent started a refund this turn: its confirm panel shows under the answer. */
-  refund?: RefundCard;
+  /** Set when the agent started refunds this turn: a confirm panel for each shows under the answer. */
+  refunds?: RefundCard[];
   error?: boolean;
   at: string;
+}
+
+// --- Session storage -----------------------------------------------------------
+// So going to the confirm page and back doesn't lose the chat. Per tab (sessionStorage), keyed
+// to the signed-in user and the chat id. Only what is visible is kept: message text, the tool
+// steps, and the refund card fields. Never a token — the browser doesn't have one.
+
+const STORE_PREFIX = "rb-agentcore:v1:";
+const MAX_STORED_MESSAGES = 60;
+const pointerKey = (userId: string) => `${STORE_PREFIX}${userId}:current`;
+const chatKey = (userId: string, chatId: string) => `${STORE_PREFIX}${userId}:chat:${chatId}`;
+
+function clearStoredChats() {
+  try {
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i);
+      if (k?.startsWith(STORE_PREFIX)) sessionStorage.removeItem(k);
+    }
+  } catch {
+    // storage unavailable — nothing to clear
+  }
+}
+
+const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : undefined);
+
+/** Rebuild messages from storage field by field, so nothing unexpected can come back. */
+function readStoredMessages(raw: unknown): ChatMessage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(-MAX_STORED_MESSAGES).flatMap((m, i): ChatMessage[] => {
+    const x = m as Record<string, unknown> | null;
+    const role = x?.role === "user" || x?.role === "bot" ? x.role : undefined;
+    const text = str(x?.text, 8000);
+    if (!x || !role || text === undefined) return [];
+    const steps = (Array.isArray(x.steps) ? x.steps : []).slice(0, 20).flatMap((st) => {
+      const y = st as { tool?: unknown; ok?: unknown } | null;
+      return typeof y?.tool === "string" ? [{ tool: y.tool.slice(0, 128), ok: y.ok === true }] : [];
+    });
+    const refunds = (Array.isArray(x.refunds) ? x.refunds : []).slice(0, 5).flatMap((rf): RefundCard[] => {
+      const y = rf as Record<string, unknown> | null;
+      const requestId = str(y?.requestId, 64);
+      const orderId = str(y?.orderId, 64);
+      const confirmUrl = str(y?.confirmUrl, 500);
+      if (!y || !requestId || !orderId || !confirmUrl) return [];
+      return [
+        {
+          requestId,
+          orderId,
+          item: str(y.item, 200) ?? null,
+          amountCents: typeof y.amountCents === "number" ? Math.trunc(y.amountCents) : null,
+          confirmUrl,
+        },
+      ];
+    });
+    return [
+      {
+        id: typeof x.id === "number" ? x.id : i,
+        role,
+        text,
+        at: str(x.at, 40) ?? new Date().toISOString(),
+        ...(steps.length ? { steps } : {}),
+        ...(refunds.length ? { refunds } : {}),
+        ...(x.error === true ? { error: true } : {}),
+      },
+    ];
+  });
+}
+
+/**
+ * What an earlier turn looks like to the agent: the visible text, plus — for a turn where the
+ * agent started refunds — one plain line per refund saying so, so it doesn't doubt itself on a
+ * follow-up. Only the order id and request id from the card; never the link or any other field.
+ * Capped at 2000 characters, with the notes kept and the visible text trimmed to make room.
+ */
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+function historyText(m: ChatMessage): string {
+  const notes = (m.refunds ?? [])
+    .filter((r) => SAFE_ID.test(r.orderId) && SAFE_ID.test(r.requestId))
+    .map(
+      (r) =>
+        `[System note: start_refund succeeded for order ${r.orderId}, request ${r.requestId}. ` +
+        "The customer sees a confirm card and must confirm it in the browser.]"
+    );
+  if (m.role === "user" || notes.length === 0) return m.text.slice(0, 2000);
+  const block = notes.join("\n");
+  return `${m.text.slice(0, Math.max(0, 2000 - block.length - 1))}\n${block}`;
 }
 
 function clock(iso: string) {
@@ -174,9 +259,12 @@ function Markdown({ text }: { text: string }) {
 
 export default function AgentCoreChat({
   customerName,
+  customerId,
   onActiveRequest,
 }: {
   customerName?: string;
+  /** The signed-in user's id — keys the saved chat so one user never sees another's. */
+  customerId: string;
   /** Told about the latest state of the refund the agent started (or undefined on New chat). */
   onActiveRequest?: (view: RefundRequestView | undefined) => void;
 }) {
@@ -192,6 +280,55 @@ export default function AgentCoreChat({
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   }, [messages, busy]);
+
+  // Restore this tab's chat for this user (after mount, so server and client render the same).
+  useEffect(() => {
+    try {
+      const id = sessionStorage.getItem(pointerKey(customerId));
+      if (!id) return;
+      const saved = readStoredMessages(JSON.parse(sessionStorage.getItem(chatKey(customerId, id)) ?? "null"));
+      if (saved.length === 0) return;
+      chatId.current = id;
+      nextId.current = Math.max(...saved.map((m) => m.id)) + 1;
+      setMessages(saved);
+    } catch {
+      // unreadable or unavailable storage: start fresh
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerId]);
+
+  // Keep the saved chat current. Nothing is written until a chat has begun.
+  useEffect(() => {
+    const id = chatId.current;
+    // Greeting-only means nothing worth saving yet (and avoids overwriting a chat that is
+    // still being restored on first render).
+    if (!id || !messages.some((m) => m.id !== 0)) return;
+    try {
+      sessionStorage.setItem(pointerKey(customerId), id);
+      const slim = messages.slice(-MAX_STORED_MESSAGES).map((m) => ({
+        id: m.id,
+        role: m.role,
+        text: m.text,
+        at: m.at,
+        ...(m.steps ? { steps: m.steps } : {}),
+        ...(m.refunds ? { refunds: m.refunds } : {}),
+        ...(m.error ? { error: true } : {}),
+      }));
+      sessionStorage.setItem(chatKey(customerId, id), JSON.stringify(slim));
+    } catch {
+      // quota or privacy mode: the chat just won't survive a page change
+    }
+  }, [messages, customerId]);
+
+  // Sign-out (the shared nav's link) clears the saved chat before the page unloads.
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const link = (e.target as Element | null)?.closest?.("a");
+      if (link && new URL(link.href, location.href).pathname === "/api/auth/logout") clearStoredChats();
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, []);
 
   function push(m: Omit<ChatMessage, "id" | "at">) {
     setMessages((cur) => [...cur, { ...m, id: nextId.current++, at: new Date().toISOString() }]);
@@ -239,6 +376,12 @@ export default function AgentCoreChat({
     if (!prompt || busy) return;
     // One id per chat: the server derives the AgentCore runtime session from it.
     chatId.current ??= crypto.randomUUID();
+    // Earlier turns, as plain text only (no steps, cards, or errors), so the agent remembers the
+    // conversation. The greeting is the page's, not part of the conversation. Capped.
+    const history = messages
+      .filter((m) => m.id !== 0 && !m.error && m.text.trim())
+      .slice(-20)
+      .map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: historyText(m) }));
     setInput("");
     push({ role: "user", text: prompt });
     setBusy(true);
@@ -246,11 +389,12 @@ export default function AgentCoreChat({
       const res = await fetch("/api/agentcore/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, chatId: chatId.current }),
+        body: JSON.stringify({ prompt, chatId: chatId.current, history }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         answer?: string;
         steps?: Step[];
+        refunds?: RefundCard[];
         refund?: RefundCard;
         error?: string;
       };
@@ -265,7 +409,12 @@ export default function AgentCoreChat({
         });
       } else {
         const answer = data.answer?.trim() || "The agent didn't return an answer.";
-        push({ role: "bot", text: answer, steps: data.steps ?? [], refund: data.refund });
+        push({
+          role: "bot",
+          text: answer,
+          steps: data.steps ?? [],
+          refunds: data.refunds ?? (data.refund ? [data.refund] : undefined),
+        });
       }
     } catch {
       push({ role: "bot", error: true, text: "Could not reach the server. Please try again." });
@@ -275,6 +424,7 @@ export default function AgentCoreChat({
   }
 
   function newChat() {
+    clearStoredChats();
     chatId.current = null;
     setRequests({});
     lastKey.current = {};
@@ -306,7 +456,14 @@ export default function AgentCoreChat({
         </button>
       </header>
 
-      <div ref={scroller} className="flex-1 space-y-4 overflow-y-auto bg-surface px-4 py-4">
+      <div
+        ref={scroller}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-label="Conversation with the RefundBot agent"
+        className="flex-1 space-y-4 overflow-y-auto bg-surface px-4 py-4"
+      >
         {messages.map((m) =>
           m.role === "user" ? (
             <div key={m.id} className="flex flex-col items-end ia-animate-in">
@@ -346,16 +503,16 @@ export default function AgentCoreChat({
                   </div>
                 ) : null}
 
-                {m.refund ? (
-                  <div className="mt-2 w-fit max-w-[92%]">
+                {m.refunds?.map((rf) => (
+                  <div key={rf.requestId} className="mt-2 w-fit max-w-[92%]">
                     <EmbeddedConfirm
-                      r={m.refund}
-                      view={requests[m.refund.requestId]}
+                      r={rf}
+                      view={requests[rf.requestId]}
                       onLoad={(v) => adopt(v)}
                       onChange={adopt}
                     />
                   </div>
-                ) : null}
+                ))}
 
                 <span suppressHydrationWarning className="mt-1 block text-[0.62rem] text-ink-soft">
                   RefundBot agent{m.id === 0 ? "" : ` · ${clock(m.at)}`}

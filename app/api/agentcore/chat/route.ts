@@ -23,6 +23,27 @@ const NO_STORE = { "Cache-Control": "no-store" };
 const CHAT_ID = /^[A-Za-z0-9_-]{8,64}$/;
 const MAX_PROMPT = 4000;
 const TIMEOUT_MS = 110_000;
+const MAX_HISTORY_MESSAGES = 20; // last 10 exchanges
+const MAX_HISTORY_TEXT = 2000;
+const MAX_REFUNDS = 5;
+
+/**
+ * The only "[System note:" line history may carry: the browser's record that start_refund
+ * succeeded, with just an order id and a request id. In an assistant message any other line
+ * starting "[System note:" is dropped; in a user message every such line is, so a customer
+ * can't type one to pass off a claim as a fact.
+ */
+const REFUND_NOTE =
+  /^\[System note: start_refund succeeded for order [A-Za-z0-9_-]{1,64}, request [A-Za-z0-9_-]{1,64}\. The customer sees a confirm card and must confirm it in the browser\.\]$/;
+function cleanNotes(text: string, role: "user" | "assistant"): string {
+  return text
+    .split("\n")
+    .filter((line) => {
+      const l = line.trim();
+      return !l.startsWith("[System note:") || (role === "assistant" && REFUND_NOTE.test(l));
+    })
+    .join("\n");
+}
 
 function json(body: Record<string, unknown>, status = 200) {
   return NextResponse.json(body, { status, headers: NO_STORE });
@@ -40,7 +61,7 @@ export async function POST(request: NextRequest) {
   const runtimeUrl = process.env.AGENTCORE_RUNTIME_URL?.trim();
   if (!runtimeUrl) return json({ error: "AgentCore is not configured (AGENTCORE_RUNTIME_URL)." }, 503);
 
-  let body: { prompt?: unknown; chatId?: unknown };
+  let body: { prompt?: unknown; chatId?: unknown; history?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -54,6 +75,18 @@ export async function POST(request: NextRequest) {
     return json({ error: "`chatId` is missing or invalid." }, 400);
   }
 
+  // Earlier turns, as plain text only: role + text, capped in number and size. Anything else
+  // the browser sends (tool results, card data, extra fields) is dropped here.
+  const history = (Array.isArray(body.history) ? body.history : [])
+    .slice(-MAX_HISTORY_MESSAGES)
+    .flatMap((m) => {
+      const x = m as { role?: unknown; text?: unknown } | null;
+      const role = x?.role === "user" || x?.role === "assistant" ? x.role : undefined;
+      const text =
+        role && typeof x?.text === "string" ? cleanNotes(x.text, role).trim().slice(0, MAX_HISTORY_TEXT) : "";
+      return role && text ? [{ role, text }] : [];
+    });
+
   let res: Response;
   try {
     res = await fetch(runtimeUrl, {
@@ -64,7 +97,7 @@ export async function POST(request: NextRequest) {
         Authorization: `Bearer ${session.accessToken}`,
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": runtimeSessionId(session.userId, body.chatId),
       },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, history }),
       cache: "no-store",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -86,7 +119,7 @@ export async function POST(request: NextRequest) {
     return json({ error: `${hint} (HTTP ${res.status}).` }, 502);
   }
 
-  let data: { answer?: unknown; steps?: unknown; refund?: unknown };
+  let data: { answer?: unknown; steps?: unknown; refund?: unknown; refunds?: unknown };
   try {
     data = await res.json();
   } catch {
@@ -104,36 +137,44 @@ export async function POST(request: NextRequest) {
         : [];
     });
 
-  // The embedded confirm panel's data, if the agent started a refund. Re-validated and capped
-  // here too. The page loads the full request itself, by requestId.
-  let refund:
-    | { requestId: string; orderId: string; item: string | null; amountCents: number | null; confirmUrl: string }
-    | undefined;
-  const r = data.refund as Record<string, unknown> | null | undefined;
-  if (r && typeof r === "object") {
-    const str = (v: unknown, max: number) => (typeof v === "string" && v ? v.slice(0, max) : undefined);
+  // The embedded confirm panels' data: a card for every refund the agent started. Each is
+  // re-validated and capped here too; the page loads the full request itself, by requestId.
+  // The older single `refund` field is still read, in case the agent is not yet updated.
+  type Card = { requestId: string; orderId: string; item: string | null; amountCents: number | null; confirmUrl: string };
+  const str = (v: unknown, max: number) => (typeof v === "string" && v ? v.slice(0, max) : undefined);
+  const toCard = (raw: unknown): Card | undefined => {
+    const r = raw as Record<string, unknown> | null | undefined;
+    if (!r || typeof r !== "object") return undefined;
     const requestId = str(r.requestId, 64);
     const orderId = str(r.orderId, 64);
     const rawUrl = str(r.confirmUrl, 500);
-    if (requestId && orderId && rawUrl) {
-      try {
-        const url = new URL(rawUrl);
-        if (url.protocol === "https:" || url.protocol === "http:") {
-          refund = {
-            requestId,
-            orderId,
-            item: str(r.item, 200) ?? null,
-            amountCents:
-              typeof r.amountCents === "number" && Number.isFinite(r.amountCents)
-                ? Math.trunc(r.amountCents)
-                : null,
-            confirmUrl: url.toString(),
-          };
-        }
-      } catch {
-        // An unusable link: show no card rather than a broken one.
-      }
+    if (!requestId || !orderId || !rawUrl) return undefined;
+    try {
+      const url = new URL(rawUrl);
+      if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+      return {
+        requestId,
+        orderId,
+        item: str(r.item, 200) ?? null,
+        amountCents:
+          typeof r.amountCents === "number" && Number.isFinite(r.amountCents)
+            ? Math.trunc(r.amountCents)
+            : null,
+        confirmUrl: url.toString(),
+      };
+    } catch {
+      return undefined; // an unusable link: show no card rather than a broken one
     }
+  };
+  const refunds: Card[] = [];
+  for (const raw of Array.isArray(data.refunds) ? data.refunds : data.refund ? [data.refund] : []) {
+    const card = toCard(raw);
+    if (card && !refunds.some((c) => c.requestId === card.requestId)) refunds.push(card);
+    if (refunds.length >= MAX_REFUNDS) break;
   }
-  return json({ answer, steps, ...(refund ? { refund } : {}) });
+  return json({
+    answer,
+    steps,
+    ...(refunds.length ? { refunds, refund: refunds[refunds.length - 1] } : {}),
+  });
 }

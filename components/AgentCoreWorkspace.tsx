@@ -22,7 +22,7 @@ export default function AgentCoreWorkspace({
   const [active, setActive] = useState<RefundRequestView | undefined>();
   return (
     <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,27rem)_minmax(0,1fr)]">
-      <AgentCoreChat customerName={customerName} onActiveRequest={setActive} />
+      <AgentCoreChat customerName={customerName} customerId={customerId} onActiveRequest={setActive} />
       <AgentCoreBehindTheScenes active={active} customerId={customerId} mode={exchangeMode} />
     </div>
   );
