@@ -2,15 +2,18 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import RefundConfirmPanel from "@/components/RefundConfirmPanel";
+import RefundProgressCard, { TERMINAL } from "@/components/RefundProgressCard";
 import { formatUsd, type RefundRequestView } from "@/lib/refund-types";
 
 /**
  * The chat with the AgentCore agent. Same look as the RefundBot chat (components/RefundChat.tsx)
  * — header bar, bubbles, typing dots, pill input — but a much smaller state machine: the
  * server route does the agent call. When the agent started a refund, the answer comes with
- * the refund's id and the same confirm panel the confirm page uses
- * (components/RefundConfirmPanel.tsx) is shown right under it, so the customer confirms or
- * declines here, with the same step-up. This component never sees an access token.
+ * the refund's id: the same progress card RefundChat shows, and the same confirm panel the
+ * confirm page uses (components/RefundConfirmPanel.tsx), appear right under it, so the customer
+ * confirms or declines here, with the same step-up. The card keeps updating, and the bot
+ * replies in the chat with the outcome, as in RefundChat. This component never sees an access
+ * token.
  */
 
 interface Step {
@@ -173,6 +176,8 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
   const [messages, setMessages] = useState<ChatMessage[]>(() => [greeting(customerName)]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [requests, setRequests] = useState<Record<string, RefundRequestView>>({});
+  const lastKey = useRef<Record<string, string>>({});
   const chatId = useRef<string | null>(null);
   const nextId = useRef(1);
   const scroller = useRef<HTMLDivElement>(null);
@@ -184,6 +189,39 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
   function push(m: Omit<ChatMessage, "id" | "at">) {
     setMessages((cur) => [...cur, { ...m, id: nextId.current++, at: new Date().toISOString() }]);
   }
+
+  const keyOf = (v: RefundRequestView) => `${v.decision}:${v.customer.state}:${v.employee.state}`;
+
+  /** Take a refund's latest state; if it comes with a reply, the bot says it in the chat. */
+  function adopt(view: RefundRequestView | undefined, reply?: string) {
+    if (view) {
+      setRequests((r) => ({ ...r, [view.id]: view }));
+      lastKey.current[view.id] = keyOf(view);
+    }
+    if (reply) push({ role: "bot", text: reply });
+  }
+
+  // Once the customer has confirmed and a specialist is reviewing (or it's executing), poll so
+  // the card and the chat pick back up on their own — same as RefundChat.
+  const waitingId = Object.values(requests).find(
+    (v) => !TERMINAL.has(v.decision) && v.customer.state === "approved"
+  )?.id;
+  useEffect(() => {
+    if (!waitingId) return;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/refund?requestId=${encodeURIComponent(waitingId)}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const d = (await res.json()) as { request: RefundRequestView; reply: string };
+        if (keyOf(d.request) !== lastKey.current[waitingId]) adopt(d.request, d.reply);
+        else setRequests((r) => ({ ...r, [d.request.id]: d.request }));
+      } catch {
+        // transient; next tick
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingId]);
 
   async function send(text: string) {
     const prompt = text.trim();
@@ -227,6 +265,8 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
 
   function newChat() {
     chatId.current = null;
+    setRequests({});
+    lastKey.current = {};
     setMessages([greeting(customerName)]);
     setInput("");
   }
@@ -296,7 +336,12 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
 
                 {m.refund ? (
                   <div className="mt-2 w-fit max-w-[92%]">
-                    <EmbeddedConfirm r={m.refund} />
+                    <EmbeddedConfirm
+                      r={m.refund}
+                      view={requests[m.refund.requestId]}
+                      onLoad={(v) => adopt(v)}
+                      onChange={adopt}
+                    />
                   </div>
                 ) : null}
 
@@ -380,13 +425,24 @@ type ConfirmState =
   | { status: "error" };
 
 /**
- * The same confirm panel the confirm page shows, inside the chat. The refund was started by
- * the agent (through /api/agent/refund), not by this page, so the page loads its current state
- * from GET /api/refund?requestId=… — the route the web chat polls, which only returns the
- * signed-in customer's own requests. Confirming or declining then goes through the panel's
- * own routes (/api/two-factor/*, POST /api/refund), exactly as in RefundChat.
+ * The refund's progress card and confirm panel, inside the chat. The refund was started by the
+ * agent (through /api/agent/refund), not by this page, so the page loads its current state from
+ * GET /api/refund?requestId=… — the route the web chat polls, which only returns the signed-in
+ * customer's own requests. That state drives the card (kept fresh by the parent as the customer
+ * decides). Confirming or declining goes through the panel's own routes (/api/two-factor/*,
+ * POST /api/refund), exactly as in RefundChat.
  */
-function EmbeddedConfirm({ r }: { r: RefundCard }) {
+function EmbeddedConfirm({
+  r,
+  view,
+  onLoad,
+  onChange,
+}: {
+  r: RefundCard;
+  view?: RefundRequestView;
+  onLoad: (view: RefundRequestView) => void;
+  onChange: (view: RefundRequestView | undefined, reply: string) => void;
+}) {
   const [state, setState] = useState<ConfirmState>({ status: "loading" });
 
   useEffect(() => {
@@ -395,7 +451,9 @@ function EmbeddedConfirm({ r }: { r: RefundCard }) {
       .then(async (res) => {
         const d = (await res.json()) as { request?: RefundRequestView; reply?: string };
         if (!res.ok || !d.request) throw new Error("not found");
-        if (!cancelled) setState({ status: "ready", view: d.request, reply: d.reply ?? "" });
+        if (cancelled) return;
+        onLoad(d.request);
+        setState({ status: "ready", view: d.request, reply: d.reply ?? "" });
       })
       .catch(() => {
         if (!cancelled) setState({ status: "error" });
@@ -403,10 +461,18 @@ function EmbeddedConfirm({ r }: { r: RefundCard }) {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [r.requestId]);
 
   if (state.status === "ready") {
-    return <RefundConfirmPanel embedded initial={state.view} initialReply={state.reply} />;
+    return (
+      <>
+        <RefundProgressCard r={view ?? state.view} />
+        <div className="mt-2">
+          <RefundConfirmPanel embedded initial={state.view} initialReply={state.reply} onChange={onChange} />
+        </div>
+      </>
+    );
   }
   return (
     <div className="rounded-xl border border-line bg-card px-3.5 py-3 shadow-sm">
