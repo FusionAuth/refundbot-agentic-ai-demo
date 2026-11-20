@@ -104,8 +104,8 @@ export async function POST(request: NextRequest) {
         : [];
     });
 
-  // The confirm card, if the agent started a refund. Re-validated and capped here too, and the
-  // link gets the fixed `from=agentcore` flag so the confirm page returns to this chat.
+  // The embedded confirm panel's data, if the agent started a refund. Re-validated and capped
+  // here too. The page loads the full request itself, by requestId.
   let refund:
     | { requestId: string; orderId: string; item: string | null; amountCents: number | null; confirmUrl: string }
     | undefined;
@@ -119,7 +119,6 @@ export async function POST(request: NextRequest) {
       try {
         const url = new URL(rawUrl);
         if (url.protocol === "https:" || url.protocol === "http:") {
-          url.searchParams.set("from", "agentcore");
           refund = {
             requestId,
             orderId,

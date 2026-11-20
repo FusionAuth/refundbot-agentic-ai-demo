@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { formatUsd } from "@/lib/refund-types";
+import RefundConfirmPanel from "@/components/RefundConfirmPanel";
+import { formatUsd, type RefundRequestView } from "@/lib/refund-types";
 
 /**
  * The chat with the AgentCore agent. Same look as the RefundBot chat (components/RefundChat.tsx)
  * — header bar, bubbles, typing dots, pill input — but a much smaller state machine: the
  * server route does the agent call. When the agent started a refund, the answer comes with
- * a confirm card (order, amount, "Confirm your refund"). This component never sees an access
- * token. The customer's confirmation always happens on the confirm page behind the link.
+ * the refund's id and the same confirm panel the confirm page uses
+ * (components/RefundConfirmPanel.tsx) is shown right under it, so the customer confirms or
+ * declines here, with the same step-up. This component never sees an access token.
  */
 
 interface Step {
@@ -16,7 +18,7 @@ interface Step {
   ok: boolean;
 }
 
-/** The confirm card's data, from the agent's start_refund result (via the server route). */
+/** The refund the agent started, from its start_refund result (via the server route). */
 interface RefundCard {
   requestId: string;
   orderId: string;
@@ -30,7 +32,7 @@ interface ChatMessage {
   role: "user" | "bot";
   text: string;
   steps?: Step[];
-  /** Set when the agent started a refund this turn: shown straight away under the answer. */
+  /** Set when the agent started a refund this turn: its confirm panel shows under the answer. */
   refund?: RefundCard;
   error?: boolean;
   at: string;
@@ -232,7 +234,7 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
   return (
     <section
       aria-label="Chat with the RefundBot agent"
-      className="mx-auto flex h-[min(46rem,calc(100vh-14rem))] min-h-[32rem] max-w-3xl flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-lg"
+      className="flex h-[min(46rem,calc(100vh-10rem))] min-h-[32rem] flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-lg"
     >
       <header className="flex items-center gap-3 bg-ink px-4 py-3 text-white">
         <Avatar />
@@ -294,7 +296,7 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
 
                 {m.refund ? (
                   <div className="mt-2 w-fit max-w-[92%]">
-                    <RefundConfirmCard r={m.refund} />
+                    <EmbeddedConfirm r={m.refund} />
                   </div>
                 ) : null}
 
@@ -372,22 +374,56 @@ export default function AgentCoreChat({ customerName }: { customerName?: string 
   );
 }
 
-function RefundConfirmCard({ r }: { r: RefundCard }) {
+type ConfirmState =
+  | { status: "loading" }
+  | { status: "ready"; view: RefundRequestView; reply: string }
+  | { status: "error" };
+
+/**
+ * The same confirm panel the confirm page shows, inside the chat. The refund was started by
+ * the agent (through /api/agent/refund), not by this page, so the page loads its current state
+ * from GET /api/refund?requestId=… — the route the web chat polls, which only returns the
+ * signed-in customer's own requests. Confirming or declining then goes through the panel's
+ * own routes (/api/two-factor/*, POST /api/refund), exactly as in RefundChat.
+ */
+function EmbeddedConfirm({ r }: { r: RefundCard }) {
+  const [state, setState] = useState<ConfirmState>({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/refund?requestId=${encodeURIComponent(r.requestId)}`, { cache: "no-store" })
+      .then(async (res) => {
+        const d = (await res.json()) as { request?: RefundRequestView; reply?: string };
+        if (!res.ok || !d.request) throw new Error("not found");
+        if (!cancelled) setState({ status: "ready", view: d.request, reply: d.reply ?? "" });
+      })
+      .catch(() => {
+        if (!cancelled) setState({ status: "error" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [r.requestId]);
+
+  if (state.status === "ready") {
+    return <RefundConfirmPanel embedded initial={state.view} initialReply={state.reply} />;
+  }
   return (
     <div className="rounded-xl border border-line bg-card px-3.5 py-3 shadow-sm">
       <p className="text-xs font-semibold text-ink">
         {r.item ?? r.orderId}
         {r.amountCents != null ? ` · ${formatUsd(r.amountCents)}` : ""}
       </p>
-      <p className="mt-0.5 text-xs text-ink-soft">
-        Confirm your refund to finish. This can&apos;t be done from chat.
-      </p>
-      <a
-        href={r.confirmUrl}
-        className="mt-2 inline-block rounded-full bg-brand px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-brand-ink"
-      >
-        Confirm your refund →
-      </a>
+      {state.status === "loading" ? (
+        <p className="mt-0.5 text-xs text-ink-soft">Loading your refund…</p>
+      ) : (
+        <p className="mt-0.5 text-xs text-denied">
+          Couldn&apos;t load the confirmation here.{" "}
+          <a href={r.confirmUrl} className="underline">
+            Open the confirm page
+          </a>
+        </p>
+      )}
     </div>
   );
 }

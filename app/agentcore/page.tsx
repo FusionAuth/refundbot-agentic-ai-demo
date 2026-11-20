@@ -35,7 +35,27 @@ export default async function AgentCorePage() {
           is not set), so chat replies are unavailable.
         </div>
       )}
-      <AgentCoreChat customerName={session.name} />
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,27rem)_minmax(0,1fr)]">
+        <AgentCoreChat customerName={session.name} />
+
+        {/* Behind the scenes — reserved for the AgentCore diagram */}
+        <section
+          aria-label="Behind the scenes"
+          className="scroll-mt-6 overflow-hidden rounded-2xl border border-line bg-card shadow-sm"
+        >
+          <div className="border-b border-line px-5 pt-4">
+            <div className="pb-3">
+              <h2 className="font-bold text-ink font-display">Behind the scenes</h2>
+              <p className="text-xs text-ink-soft">How the agent reaches your orders, step by step.</p>
+            </div>
+          </div>
+          <div className="px-5 py-4">
+            <p className="rounded-lg border border-dashed border-line bg-surface px-4 py-6 text-center text-xs text-ink-soft">
+              The AgentCore diagram goes here.
+            </p>
+          </div>
+        </section>
+      </div>
     </Shell>
   );
 }

@@ -25,9 +25,11 @@ const SYSTEM_PROMPT =
   "You can start a refund with start_refund, but only after you have looked up the order " +
   "with the other tools. start_refund only STARTS the refund: the customer must still " +
   "confirm it themselves in their browser. When start_refund succeeds and returns a " +
-  "confirmUrl, say the refund is ready to confirm and tell the customer to use the confirm " +
-  "button shown below your answer. Do NOT print the confirmUrl or any link. If the result " +
-  "has no confirmUrl, the refund was not started: explain why from its message or failure. " +
+  "confirmUrl, the page shows the order, the amount and the confirm button right under your " +
+  "answer, so reply with ONE short line saying the refund is ready to confirm below — and " +
+  "nothing else: no order details, amounts, steps, or link. Do NOT print the confirmUrl or " +
+  "any link. If the result has no confirmUrl, the refund was not started: explain why from " +
+  "its message or failure. " +
   "Use real line breaks; never type the characters backslash-n. You cannot confirm, " +
   "approve, or complete a refund, so never say or imply that you did. If you need an order " +
   "id, ask the customer for it; never suggest, guess, or give an example of a specific " +
